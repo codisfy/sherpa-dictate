@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$#" -eq 0 ]; then
+    set -- toggle
+fi
+
+exec "$script_dir/.venv/bin/python" "$script_dir/sherpa_dictate.py" "$@"

@@ -1,0 +1,45 @@
+active_model = "parakeet"
+
+num_threads = 8
+input_sample_rate = 48000
+audio_device = ""
+paste_delay_ms = 180
+
+# "type" sends virtual key events. "clipboard" uses the settings below.
+output_method = "type"
+typing_key_delay_ms = 2
+typing_key_hold_ms = 2
+clipboard_sensitive = true
+clipboard_shortcut = "ctrl_shift_v"
+clipboard_clear_after_paste_ms = 500
+
+# Continuous dictation settings
+silence_ms = 900
+pre_roll_ms = 300
+min_speech_ms = 250
+max_phrase_seconds = 30
+speech_threshold = 0.012
+append_space_after_phrase = true
+spoken_punctuation = true
+
+[models.nemotron]
+backend = "online"
+model_dir = "~/.cache/openwhispr/parakeet-models/nemotron-3.5-asr-streaming-0.6b"
+language = "auto"
+
+[models.nemotron-en]
+backend = "online"
+model_dir = "~/.cache/openwhispr/parakeet-models/nemotron-speech-streaming-en-0.6b"
+language = "en"
+
+[models.parakeet]
+backend = "offline"
+model_type = "nemo_transducer"
+model_dir = "~/.cache/openwhispr/parakeet-models/parakeet-tdt-0.6b-v3"
+language = ""
+
+[models.parakeet-en]
+backend = "offline"
+model_type = "nemo_transducer"
+model_dir = "~/.cache/openwhispr/parakeet-models/parakeet-unified-en-0.6b"
+language = ""

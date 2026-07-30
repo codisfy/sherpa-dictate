@@ -1,0 +1,5 @@
+.active-model
+.venv/
+__pycache__/
+*.py[cod]
+dictate.log
