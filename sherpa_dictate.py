@@ -135,8 +135,13 @@ class DictationEngine:
         self.clipboard_clear_delay = (
             int(config.get("clipboard_clear_after_paste_ms", 500)) / 1000
         )
+        self.warm_up_model = bool(config.get("warm_up_model", True))
+        self.warm_up_output = bool(config.get("warm_up_output", True))
         self.silence_seconds = int(config.get("silence_ms", 900)) / 1000
         self.pre_roll_seconds = int(config.get("pre_roll_ms", 300)) / 1000
+        self.first_phrase_pre_roll_seconds = (
+            int(config.get("first_phrase_pre_roll_ms", 2000)) / 1000
+        )
         self.min_speech_seconds = int(config.get("min_speech_ms", 250)) / 1000
         self.max_phrase_seconds = float(config.get("max_phrase_seconds", 30))
         self.speech_threshold = float(config.get("speech_threshold", 0.012))
@@ -170,6 +175,8 @@ class DictationEngine:
                 **model_files,
                 model_type=self.model_type,
             )
+        if self.warm_up_model:
+            self._warm_up_recognizer()
         logging.info("Model profile=%s loaded", self.model_name)
 
         self.listening = False
@@ -185,6 +192,28 @@ class DictationEngine:
         self.overflowed = False
         self.phrases_pasted = 0
         self.paste_warning = ""
+
+    def _warm_up_recognizer(self) -> None:
+        started = time.monotonic()
+        sample_rate = 16000
+        silence = np.zeros(sample_rate, dtype=np.float32)
+        stream = self.recognizer.create_stream()
+        if self.backend == "offline":
+            stream.accept_waveform(sample_rate, silence)
+            self.recognizer.decode_stream(stream)
+            _ = stream.result.text
+        else:
+            if self.language:
+                stream.set_option("language", self.language)
+            stream.accept_waveform(sample_rate, silence)
+            stream.input_finished()
+            while self.recognizer.is_ready(stream):
+                self.recognizer.decode_stream(stream)
+            _ = self.recognizer.get_result(stream)
+        logging.info(
+            "Recognizer warm-up completed in %.3f seconds",
+            time.monotonic() - started,
+        )
 
     def _new_recognition_stream(self) -> Any:
         if self.backend == "offline":
@@ -258,7 +287,10 @@ class DictationEngine:
 
         pre_roll: deque[np.ndarray] = deque()
         pre_roll_samples = 0
-        pre_roll_limit = int(self.pre_roll_seconds * self.input_sample_rate)
+        regular_pre_roll_limit = int(self.pre_roll_seconds * self.input_sample_rate)
+        first_pre_roll_limit = int(
+            self.first_phrase_pre_roll_seconds * self.input_sample_rate
+        )
         silence_limit = int(self.silence_seconds * self.input_sample_rate)
         min_speech_samples = int(self.min_speech_seconds * self.input_sample_rate)
         max_phrase_samples = int(self.max_phrase_seconds * self.input_sample_rate)
@@ -269,16 +301,20 @@ class DictationEngine:
         transcripts: list[str] = []
         output_started = False
         last_output_character = ""
+        first_phrase_captured = False
 
         def finish_phrase() -> None:
             nonlocal stream, phrase_samples, voiced_samples, silent_samples
             nonlocal output_started, last_output_character
+            nonlocal first_phrase_captured
             if stream is None:
                 return
 
             text = self._finalize_stream(stream)
             if text and voiced_samples >= min_speech_samples:
                 transcripts.append(text)
+                was_first_phrase = not first_phrase_captured
+                first_phrase_captured = True
                 if self.continuous_paste:
                     command_text = spoken_command_output(text) if self.spoken_punctuation else None
                     if command_text is not None:
@@ -307,7 +343,11 @@ class DictationEngine:
                     if paste_result.get("warning"):
                         self.paste_warning = str(paste_result["warning"])
                 logging.info(
-                    "Continuous phrase finalized; transcription length=%d output_method=%s",
+                    "Continuous phrase finalized; first=%s audio_ms=%d "
+                    "voiced_ms=%d transcription_length=%d output_method=%s",
+                    was_first_phrase,
+                    round(phrase_samples * 1000 / self.input_sample_rate),
+                    round(voiced_samples * 1000 / self.input_sample_rate),
                     len(text),
                     self.output_method if self.continuous_paste else "disabled",
                 )
@@ -336,6 +376,11 @@ class DictationEngine:
                 if stream is None:
                     pre_roll.append(samples)
                     pre_roll_samples += samples.size
+                    pre_roll_limit = (
+                        regular_pre_roll_limit
+                        if first_phrase_captured
+                        else first_pre_roll_limit
+                    )
                     while pre_roll and pre_roll_samples > pre_roll_limit:
                         pre_roll_samples -= pre_roll.popleft().size
 
@@ -399,6 +444,17 @@ class DictationEngine:
                 "model_name": self.model_name,
                 "message": f"Already listening in {self.mode} mode",
             }
+
+        if self.output_method == "type" and self.warm_up_output:
+            warmed, warning = type_into_active_window(
+                "",
+                key_delay=self.typing_key_delay,
+                key_hold=self.typing_key_hold,
+            )
+            if warmed:
+                logging.info("Direct-typing output warm-up completed")
+            else:
+                logging.warning("Direct-typing output warm-up failed: %s", warning)
 
         self.audio_queue = queue.Queue(maxsize=200)
         self.stop_event = threading.Event()

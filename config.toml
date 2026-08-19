@@ -1,45 +1,224 @@
+# Sherpa Dictation configuration
+#
+# After changing a setting, restart the background daemon so it reloads this
+# file:
+#   ./dictate quit
+# The next dictation command or keyboard shortcut starts it again.
+#
+# IMPORTANT: Keep shared settings above the first [models.*] table. In TOML,
+# settings written after a table header belong to that model profile.
+
+
+# ---------------------------------------------------------------------------
+# Model selection
+# ---------------------------------------------------------------------------
+
+# Model profile used when no command-line selection has been saved.
+# Valid profile names are defined by the [models.*] tables below.
+#
+# The easier way to switch models is:
+#   ./dictate model                 # show current and available models
+#   ./dictate model parakeet
+#   ./dictate model nemotron
+#
+# A selection made with that command is saved in the ignored .active-model
+# file and overrides this value. Delete .active-model to return to this default.
 active_model = "parakeet"
 
-num_threads = 8
-input_sample_rate = 48000
-audio_device = ""
-paste_delay_ms = 180
 
-# "type" sends virtual key events. "clipboard" uses the settings below.
+# ---------------------------------------------------------------------------
+# Recognition and microphone
+# ---------------------------------------------------------------------------
+
+# CPU threads used by ONNX Runtime for recognition.
+# Higher values can reduce transcription latency but consume more CPU. Values
+# around half the machine's logical CPU count are a reasonable starting point.
+num_threads = 8
+
+# Sample rate requested from the microphone, in Hz. Audio is resampled to the
+# model's required rate internally. 48000 is the normal PipeWire desktop rate.
+# Change this only if the selected audio device rejects 48000 Hz.
+input_sample_rate = 48000
+
+# PortAudio input device. An empty string uses the system-default microphone.
+# You may set a PortAudio device index (for example 3) or a matching device
+# name. Restart the daemon after changing microphones.
+audio_device = ""
+
+
+# ---------------------------------------------------------------------------
+# Text insertion
+# ---------------------------------------------------------------------------
+
+# How recognized text is inserted into the focused application:
+#   "type"      - ydotool emits virtual keyboard events. Works in terminals,
+#                 does not touch the clipboard, and is the current default.
+#   "clipboard" - copy with wl-copy, send the configured paste shortcut, and
+#                 optionally clear the clipboard afterward.
+#
+# If direct typing fails, the script automatically attempts clipboard paste.
 output_method = "type"
+
+# Direct-typing timing, in milliseconds. key_delay is the pause between key
+# events; key_hold is how long each key stays pressed. Lower values type faster.
+# Increase either value if an application drops characters. Values of 1-5 ms
+# are normally useful.
 typing_key_delay_ms = 2
 typing_key_hold_ms = 2
+
+# Clipboard-only settings (also used if direct typing falls back to clipboard).
+# Delay after wl-copy updates the clipboard and before the paste shortcut is
+# sent. Increase this if the previous clipboard value is occasionally pasted.
+paste_delay_ms = 180
+
+# Pass --sensitive to wl-copy. Compatible clipboard-history managers should not
+# save the transcript, but this is a best-effort hint and cannot control a
+# manager that ignores it.
 clipboard_sensitive = true
+
+# Paste shortcut sent through ydotool/xdotool:
+#   "ctrl_shift_v" - suitable for terminals and many desktop applications
+#   "ctrl_v"       - conventional paste for ordinary text fields
 clipboard_shortcut = "ctrl_shift_v"
+
+# Clear the clipboard this many milliseconds after sending paste. The delay
+# gives the focused application time to request the data. Set to -1 to leave
+# the transcription on the clipboard instead of clearing it.
 clipboard_clear_after_paste_ms = 500
 
-# Continuous dictation settings
-silence_ms = 900
+
+# ---------------------------------------------------------------------------
+# Cold-start preparation
+# ---------------------------------------------------------------------------
+
+# Run one silent recognition when the daemon loads. This initializes the ONNX
+# execution path before the first real phrase. It adds roughly 0.05-0.1 seconds
+# once per daemon start and does not create an audio file.
+warm_up_model = true
+
+# Make an empty ydotool typing request immediately before microphone capture.
+# This initializes the virtual-keyboard connection without emitting characters
+# and helps prevent the first real insertion from losing key events.
+warm_up_output = true
+
+
+# ---------------------------------------------------------------------------
+# Continuous dictation and silence detection
+# ---------------------------------------------------------------------------
+
+# Consecutive silence required to finish a phrase, in milliseconds.
+# Lower it for faster insertion; raise it if natural thinking pauses split
+# sentences too aggressively. Typical range: 600-1500 ms.
+silence_ms = 1500
+
+# Audio retained before ordinary speech detection, in milliseconds. This keeps
+# the beginning of a word when its first sounds are below the volume threshold.
+# Raising it adds more leading silence and slightly more work per phrase.
 pre_roll_ms = 300
+
+# Longer pre-roll used until the first valid phrase in each continuous session.
+# This compensates for microphone gain and cold-start behavior. After that first
+# phrase, pre_roll_ms is used. The audio exists only in memory.
+first_phrase_pre_roll_ms = 2000
+
+# Minimum amount of above-threshold audio needed to accept a phrase. Shorter
+# sounds are treated as clicks/noise and their transcription is discarded.
 min_speech_ms = 250
+
+# Safety boundary for uninterrupted speech, in seconds. At this limit the
+# current phrase is finalized even without silence, then listening continues.
+# For offline Parakeet this also caps the main per-phrase audio buffer.
 max_phrase_seconds = 30
+
+# RMS amplitude that counts as speech. Microphone samples use a normalized
+# 0.0-1.0 scale:
+#   lower value  -> detects quieter speech, but triggers more background noise
+#   higher value -> rejects more noise, but may miss quiet first syllables
+# A practical tuning range is approximately 0.005-0.030.
 speech_threshold = 0.012
+
+# Insert a separating space before each normal phrase after the first one.
+# Spoken punctuation/newline commands are inserted without an unwanted space
+# before the punctuation itself.
 append_space_after_phrase = true
+
+# Interpret an entire recognized phrase matching one of these commands as a
+# character/action instead of literal words: "full stop", "comma",
+# "question mark", "exclamation mark", "new line", or "new paragraph".
+# The command must be spoken as its own silence-delimited phrase.
 spoken_punctuation = true
 
+
+# ---------------------------------------------------------------------------
+# Model profiles
+# ---------------------------------------------------------------------------
+#
+# Every profile needs encoder.int8.onnx, decoder.int8.onnx, joiner.int8.onnx,
+# and tokens.txt inside model_dir.
+#
+# backend = "online" feeds audio into a native streaming model while speaking.
+# backend = "offline" buffers one phrase in memory and recognizes it at pause.
+# Do not interchange these values unless the ONNX export supports that backend.
+
+# Multilingual Nemotron 3.5 streaming profile.
+# language = "auto" asks the model to select the language for each stream.
 [models.nemotron]
 backend = "online"
 model_dir = "~/.cache/openwhispr/parakeet-models/nemotron-3.5-asr-streaming-0.6b"
 language = "auto"
 
+# English-only Nemotron Speech streaming profile.
 [models.nemotron-en]
 backend = "online"
 model_dir = "~/.cache/openwhispr/parakeet-models/nemotron-speech-streaming-en-0.6b"
 language = "en"
 
+# Multilingual Parakeet TDT v3 profile. This export is non-streaming, so the
+# script buffers only the current silence-delimited phrase in memory.
+# model_type tells Sherpa to use its NeMo transducer decoder. language is blank
+# because language selection is handled by this offline model rather than a
+# per-stream option.
 [models.parakeet]
 backend = "offline"
 model_type = "nemo_transducer"
 model_dir = "~/.cache/openwhispr/parakeet-models/parakeet-tdt-0.6b-v3"
 language = ""
 
+# English-only Parakeet Unified profile; also decoded phrase-by-phrase using
+# Sherpa's offline NeMo transducer backend.
 [models.parakeet-en]
 backend = "offline"
 model_type = "nemo_transducer"
 model_dir = "~/.cache/openwhispr/parakeet-models/parakeet-unified-en-0.6b"
 language = ""
+
+
+# ---------------------------------------------------------------------------
+# Text-to-speech
+# ---------------------------------------------------------------------------
+#
+# The reader runs in a separate background daemon, so it can play through
+# headphones while dictation continues listening. Restart it after changing
+# these settings:
+#   ./read quit
+#
+# speaker_id selects one of the model's eight voices (0-7). speed values above
+# 1.0 speak faster. Leave output_device empty to use the system-default output.
+
+[tts]
+model_dir = "~/.cache/sherpa-onnx/tts/kitten-nano-en-v0_8-int8"
+model_file = "model.int8.onnx"
+voices_file = "voices.bin"
+tokens_file = "tokens.txt"
+data_dir = "espeak-ng-data"
+num_threads = 2
+speaker_id = 2
+speed = 1.4
+output_device = ""
+
+# Prevent an accidental enormous selection from producing unbounded work.
+max_text_characters = 50000
+
+# Number of synthesized chunks that may wait ahead of playback. Keeping this
+# bounded avoids holding the complete waveform for a long selection in memory.
+audio_queue_chunks = 8
