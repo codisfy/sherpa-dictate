@@ -21,11 +21,18 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from sherpa_app.settings import (
+    load_settings,
+    resolve_model_path,
+    update_settings,
+    user_data_dir,
+)
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_DIR / "config.toml"
 MODEL_SELECTION_PATH = PROJECT_DIR / ".active-model"
-LOG_PATH = PROJECT_DIR / "dictate.log"
+LOG_PATH = user_data_dir() / "logs" / "dictate.log"
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 SOCKET_PATH = RUNTIME_DIR / "sherpa-dictate.sock"
 
@@ -39,6 +46,58 @@ SPOKEN_COMMANDS = {
     "newline": "\n",
     "new paragraph": "\n\n",
 }
+
+
+def split_offline_chunks(
+    samples: Any,
+    sample_rate: int,
+    max_chunk_seconds: float = 30.0,
+) -> list[Any]:
+    """Split long audio into chunks the exported model can decode at once.
+
+    The NeMo transducer ONNX export has a fixed relative-attention table,
+    so a single decode fails on audio longer than roughly 400 seconds.
+    Splits prefer quiet (silence) positions near each target boundary so
+    words are not cut in half.
+    """
+    import numpy as np
+
+    max_chunk_samples = int(max_chunk_seconds * sample_rate)
+    if samples.size <= max_chunk_samples:
+        return [samples]
+
+    window = int(0.1 * sample_rate)
+    search_radius = int(5 * sample_rate)
+    silence_rms = 0.005
+    chunks: list[Any] = []
+    start = 0
+    total = samples.size
+    while total - start > max_chunk_samples:
+        ideal = start + max_chunk_samples
+        lo = max(start + max_chunk_samples // 2, ideal - search_radius)
+        hi = min(total - window, ideal)
+        if hi <= lo:
+            end = ideal
+        else:
+            best_end = ideal
+            best_rms = float("inf")
+            best_is_silence = False
+            for position in range(lo, hi, window):
+                segment = samples[position : position + window]
+                rms = float(np.sqrt(np.mean(np.square(segment), dtype=np.float64)))
+                is_silence = rms < silence_rms
+                if (is_silence and not best_is_silence) or (
+                    is_silence == best_is_silence and rms < best_rms
+                ):
+                    best_end = position + window
+                    best_rms = rms
+                    best_is_silence = is_silence
+            end = best_end
+        chunks.append(samples[start:end].copy())
+        start = end
+    if total - start > 0:
+        chunks.append(samples[start:].copy())
+    return chunks
 
 
 def spoken_command_output(text: str) -> str | None:
@@ -67,6 +126,9 @@ def selected_model_name(raw_config: dict[str, Any]) -> str:
         saved_selection = ""
     if saved_selection:
         selected = saved_selection
+    user_selection = load_settings().get("active_model")
+    if user_selection:
+        selected = str(user_selection)
     return selected
 
 
@@ -91,7 +153,14 @@ def load_config() -> dict[str, Any]:
     else:
         config = {**raw_config, "model_name": "default", "backend": "online"}
 
-    model_dir = Path(config["model_dir"]).expanduser()
+    user_settings = load_settings()
+    dictation_settings = user_settings.get("dictation", {})
+    if isinstance(dictation_settings, dict):
+        config.update(dictation_settings)
+
+    model_dir = resolve_model_path(
+        str(config["model_name"]), Path(str(config["model_dir"]))
+    )
     required = ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
     missing = [str(model_dir / name) for name in required if not (model_dir / name).is_file()]
     if missing:
@@ -106,6 +175,7 @@ def load_config() -> dict[str, Any]:
 
 
 def configure_logging() -> None:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=LOG_PATH,
         level=logging.INFO,
@@ -589,9 +659,15 @@ class DictationEngine:
 
         stream = self.recognizer.create_stream()
         if self.backend == "offline":
-            stream.accept_waveform(sample_rate, samples)
-            self.recognizer.decode_stream(stream)
-            text = stream.result.text.strip()
+            texts: list[str] = []
+            for chunk in split_offline_chunks(samples, sample_rate):
+                offline_stream = self.recognizer.create_stream()
+                offline_stream.accept_waveform(sample_rate, chunk)
+                self.recognizer.decode_stream(offline_stream)
+                chunk_text = offline_stream.result.text.strip()
+                if chunk_text:
+                    texts.append(chunk_text)
+            text = " ".join(texts)
         else:
             if self.language:
                 stream.set_option("language", self.language)
@@ -819,6 +895,8 @@ def handle_request(engine: DictationEngine, request: dict[str, Any]) -> tuple[di
         return engine.toggle(), False
     if action == "continuous":
         return engine.toggle_continuous(paste=bool(request.get("paste", True))), False
+    if action == "continuous-start":
+        return engine.start_continuous(paste=bool(request.get("paste", True))), False
     if action == "start":
         return engine.start(), False
     if action == "stop":
@@ -926,9 +1004,14 @@ def request_daemon(payload: dict[str, Any], timeout: float = 180) -> dict[str, A
 
 
 def start_daemon() -> None:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     log_file = LOG_PATH.open("a")
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "engine", "dictate", "daemon"]
+    else:
+        command = [sys.executable, str(Path(__file__).resolve()), "daemon"]
     subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "daemon"],
+        command,
         cwd=PROJECT_DIR,
         stdin=subprocess.DEVNULL,
         stdout=log_file,
@@ -1002,9 +1085,7 @@ def model_client(requested_model: str | None) -> int:
         except (ConnectionError, OSError, RuntimeError):
             pass
 
-    temporary_path = MODEL_SELECTION_PATH.with_suffix(".tmp")
-    temporary_path.write_text(selected + "\n", encoding="utf-8")
-    os.replace(temporary_path, MODEL_SELECTION_PATH)
+    update_settings(active_model=selected)
     notify("Sherpa model selected", f"{selected}; it will load on the next dictation")
     print(f"Selected model: {selected}")
     print("It will load on the next dictation.")
@@ -1027,7 +1108,7 @@ def client_main(arguments: argparse.Namespace) -> int:
     payload: dict[str, Any] = {"action": arguments.command}
     if arguments.command == "transcribe":
         payload["filename"] = str(Path(arguments.filename).expanduser().resolve())
-    elif arguments.command in {"stop", "continuous"}:
+    elif arguments.command in {"stop", "continuous", "continuous-start"}:
         payload["paste"] = not arguments.no_paste
 
     try:
@@ -1042,9 +1123,14 @@ def client_main(arguments: argparse.Namespace) -> int:
 
     if not response.get("ok"):
         message = response.get("message", "Unknown error")
-        notify("Dictation error", message)
+        if arguments.command != "status":
+            notify("Dictation error", message)
         print(f"Error: {message}", file=sys.stderr)
         return 1
+
+    if arguments.command == "status":
+        print(json.dumps(response, indent=2))
+        return 0
 
     state = response.get("state")
     if state == "listening":
@@ -1056,7 +1142,7 @@ def client_main(arguments: argparse.Namespace) -> int:
             )
         else:
             notify(f"Listening: {model_name}", "Press the shortcut again to transcribe")
-    elif arguments.command in {"toggle", "continuous", "stop"}:
+    elif arguments.command in {"toggle", "continuous", "continuous-start", "stop"}:
         warning = response.get("warning", "")
         notify(response.get("message", "Transcription complete"), warning)
     elif arguments.command == "quit":
@@ -1070,7 +1156,7 @@ def client_main(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local Sherpa-ONNX dictation")
     subparsers = parser.add_subparsers(dest="command")
     for command in ("toggle", "start", "status", "quit", "daemon"):
@@ -1080,6 +1166,13 @@ def parse_arguments() -> argparse.Namespace:
         help="Toggle continuous dictation; pauses finalize and paste each phrase",
     )
     continuous.add_argument("--no-paste", action="store_true", help="Recognize without pasting")
+    continuous_start = subparsers.add_parser(
+        "continuous-start",
+        help="Start continuous dictation without toggling an active session",
+    )
+    continuous_start.add_argument(
+        "--no-paste", action="store_true", help="Recognize without pasting"
+    )
     stop = subparsers.add_parser("stop")
     stop.add_argument("--no-paste", action="store_true", help="Finalize without pasting")
     transcribe = subparsers.add_parser("transcribe", help="Transcribe a 16-bit PCM WAV file")
@@ -1087,7 +1180,7 @@ def parse_arguments() -> argparse.Namespace:
     model = subparsers.add_parser("model", help="Show or select the ASR model")
     model.add_argument("name", nargs="?", help="Model profile name")
 
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
     if arguments.command is None:
         arguments.command = "toggle"
     return arguments

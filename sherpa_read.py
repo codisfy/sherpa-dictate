@@ -20,10 +20,12 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from sherpa_app.settings import load_settings, resolve_model_path, user_data_dir
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_DIR / "config.toml"
-LOG_PATH = PROJECT_DIR / "read.log"
+LOG_PATH = user_data_dir() / "logs" / "read.log"
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 SOCKET_PATH = RUNTIME_DIR / "sherpa-read.sock"
 LINE_BREAK = r"(?:\r\n|[\n\r\v\f\x85\u2028\u2029])"
@@ -125,7 +127,12 @@ def load_tts_config() -> dict[str, Any]:
         raise ValueError("config.toml must contain a [tts] table")
 
     config = dict(raw_tts)
-    model_dir = Path(str(config.get("model_dir", ""))).expanduser()
+    tts_settings = load_settings().get("tts", {})
+    if isinstance(tts_settings, dict):
+        config.update(tts_settings)
+    model_dir = resolve_model_path(
+        "kitten-tts", Path(str(config.get("model_dir", "")))
+    )
     if not str(config.get("model_dir", "")).strip():
         raise ValueError("tts.model_dir must not be empty")
 
@@ -160,6 +167,7 @@ def load_tts_config() -> dict[str, Any]:
 
 
 def configure_logging() -> None:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=LOG_PATH,
         level=logging.INFO,
@@ -500,9 +508,14 @@ def request_daemon(payload: dict[str, Any], timeout: float = 10) -> dict[str, An
 
 def start_daemon() -> None:
     load_tts_config()
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     log_file = LOG_PATH.open("a")
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "engine", "read", "daemon"]
+    else:
+        command = [sys.executable, str(Path(__file__).resolve()), "daemon"]
     process = subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "daemon"],
+        command,
         cwd=PROJECT_DIR,
         stdin=subprocess.DEVNULL,
         stdout=log_file,
@@ -616,7 +629,7 @@ def client_main(arguments: argparse.Namespace) -> int:
     return report_response(response, "speak")
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local Sherpa text-to-speech reader")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("selection", help="Toggle reading of the desktop selection")
@@ -625,7 +638,7 @@ def parse_arguments() -> argparse.Namespace:
     for command in ("stop", "status", "quit", "daemon"):
         subparsers.add_parser(command)
 
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
     if arguments.command is None:
         arguments.command = "selection"
     return arguments

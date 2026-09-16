@@ -1,6 +1,14 @@
 .active-model
+.agents/
+.codex/
 .venv/
 __pycache__/
 *.py[cod]
 dictate.log
 read.log
+output.txt
+.downloads/
+*.part
+build/
+dist/
+*.deb

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Sherpa
+Comment=Private, local dictation and text to speech
+Exec=@SHERPA_EXEC@
+Icon=@SHERPA_ICON@
+Terminal=false
+Categories=AudioVideo;Audio;Utility;Accessibility;
+Keywords=dictation;speech;voice;transcription;tts;
+StartupNotify=true
+StartupWMClass=Sherpa
