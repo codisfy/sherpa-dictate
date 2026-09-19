@@ -12,7 +12,7 @@ distributions, download the latest `.deb` from the
 then install it with:
 
 ```bash
-sudo apt install ./sherpa_0.1.1_amd64.deb
+sudo apt install ./sherpa_0.1.2_amd64.deb
 ```
 
 Open **Sherpa** from the application menu. Speech models are not bundled; the
@@ -100,7 +100,7 @@ and provides a Copy button for each fallback command.
 ```bash
 ./.venv/bin/pip install -r requirements-dev.txt
 ./build-release.sh
-./build-deb.sh 0.1.1
+./build-deb.sh 0.1.2
 ```
 
 This produces a self-contained application directory and a Debian package in

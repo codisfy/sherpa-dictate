@@ -2,7 +2,7 @@
 set -eu
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-version=${1:-0.1.1}
+version=${1:-0.1.2}
 architecture=$(dpkg --print-architecture)
 bundle="$project_dir/dist/sherpa"
 package_root="$project_dir/build/deb-root"

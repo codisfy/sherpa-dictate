@@ -661,7 +661,11 @@ class SherpaWindow(QMainWindow):
             QTabWidget::pane { border: none; }
             QTabBar::tab { padding: 10px 18px; margin-top: 10px; color: #657169; border: none; }
             QTabBar::tab:selected { color: #116a3e; border-bottom: 2px solid #167c4a; font-weight: 600; }
-            QComboBox, QLineEdit { background: white; border: 1px solid #cbd5ce; border-radius: 7px; padding: 7px; min-height: 22px; }
+            QComboBox, QLineEdit { color: #18221d; background: white; border: 1px solid #cbd5ce; border-radius: 7px; padding: 7px; min-height: 22px; }
+            QComboBox QAbstractItemView { color: #18221d; background: #ffffff; border: 1px solid #aebbb2; selection-color: #102219; selection-background-color: #dcebe2; outline: 0; padding: 4px; }
+            QComboBox QAbstractItemView::item { min-height: 28px; padding: 4px 8px; }
+            QComboBox QAbstractItemView::item:hover { color: #102219; background: #edf5f0; }
+            QComboBox QAbstractItemView::item:selected { color: #102219; background: #dcebe2; }
             QSpinBox, QDoubleSpinBox { background: white; border: 1px solid #cbd5ce; border-radius: 7px; padding: 7px 34px 7px 9px; min-height: 22px; }
             QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 27px; background: #f3f6f4; border-left: 1px solid #d5ddd8; border-bottom: 1px solid #d5ddd8; border-top-right-radius: 7px; }
             QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 27px; background: #f3f6f4; border-left: 1px solid #d5ddd8; border-bottom-right-radius: 7px; }

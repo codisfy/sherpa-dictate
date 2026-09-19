@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from sherpa_app.main import SherpaWindow
@@ -64,6 +65,24 @@ class DesktopStatusTests(unittest.TestCase):
         self.assertGreater(shortcuts.verticalScrollBar().maximum(), 0)
         self.assertGreater(settings.verticalScrollBar().maximum(), 0)
 
+        window.hide()
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_text_insertion_popup_has_readable_explicit_colors(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+        window.show()
+        window.output_method.showPopup()
+        self.app.processEvents()
+
+        palette = window.output_method.view().palette()
+        self.assertEqual(palette.color(QPalette.Base).name(), "#ffffff")
+        self.assertEqual(palette.color(QPalette.Text).name(), "#18221d")
+        self.assertEqual(palette.color(QPalette.Highlight).name(), "#dcebe2")
+        self.assertEqual(palette.color(QPalette.HighlightedText).name(), "#102219")
+
+        window.output_method.hidePopup()
         window.hide()
         window.tray.hide()
         window.deleteLater()
