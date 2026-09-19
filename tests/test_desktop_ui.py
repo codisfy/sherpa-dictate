@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPalette
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from sherpa_app.main import SherpaWindow
@@ -84,6 +86,20 @@ class DesktopStatusTests(unittest.TestCase):
 
         window.output_method.hidePopup()
         window.hide()
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_toggle_switch_entire_visual_area_is_clickable(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+        toggle = window.start_minimized
+        toggle.setChecked(False)
+
+        QTest.mouseClick(toggle, Qt.LeftButton, pos=QPoint(42, 13))
+        self.assertTrue(toggle.isChecked())
+        QTest.mouseClick(toggle, Qt.LeftButton, pos=QPoint(42, 13))
+        self.assertFalse(toggle.isChecked())
+
         window.tray.hide()
         window.deleteLater()
 

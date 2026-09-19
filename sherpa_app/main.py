@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QProcess, QRectF, QSize, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, QProcess, QRectF, QSize, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QIcon, QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -91,6 +91,10 @@ class ToggleSwitch(QCheckBox):
 
     def sizeHint(self) -> QSize:
         return QSize(46, 26)
+
+    def hitButton(self, position: QPoint) -> bool:
+        """Make the whole painted switch clickable, not just Qt's checkbox rect."""
+        return self.rect().contains(position)
 
     def paintEvent(self, _event: Any) -> None:
         painter = QPainter(self)
