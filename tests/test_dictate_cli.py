@@ -2,7 +2,7 @@ import argparse
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -50,6 +50,21 @@ class DictateStatusTests(unittest.TestCase):
         self.assertFalse(should_stop)
         engine.start_continuous.assert_called_once_with(paste=True)
         engine.toggle_continuous.assert_not_called()
+
+    def test_restart_refuses_to_interrupt_active_dictation(self) -> None:
+        with (
+            patch.object(sherpa_dictate, "SOCKET_PATH") as socket_path,
+            patch("sherpa_dictate.request_daemon") as request_daemon,
+            patch("sherpa_dictate.start_daemon") as start_daemon,
+        ):
+            socket_path.exists.return_value = True
+            request_daemon.return_value = {"ok": True, "state": "listening"}
+            with redirect_stderr(io.StringIO()):
+                result = sherpa_dictate.restart_client()
+
+        self.assertEqual(result, 1)
+        request_daemon.assert_called_once_with({"action": "status"}, timeout=3)
+        start_daemon.assert_not_called()
 
 
 if __name__ == "__main__":

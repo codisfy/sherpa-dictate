@@ -68,6 +68,59 @@ class DesktopStatusTests(unittest.TestCase):
         window.tray.hide()
         window.deleteLater()
 
+    def test_saving_settings_reloads_running_dictation_runtime(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+        window._set_combo_data(window.output_method, "clipboard")
+
+        with (
+            patch("sherpa_app.main.save_settings") as save_settings,
+            patch.object(window, "run_service") as run_service,
+        ):
+            window.save_user_settings()
+
+        save_settings.assert_called_once()
+        saved = save_settings.call_args.args[0]
+        self.assertEqual(saved["dictation"]["output_method"], "clipboard")
+        service_calls = [call.args[:2] for call in run_service.call_args_list]
+        self.assertIn(("dictate", ["reload-settings"]), service_calls)
+        self.assertIn(("read", ["reload-settings"]), service_calls)
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_engine_restart_runs_immediately_when_dictation_is_idle(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+        window.dictation_active = False
+
+        with patch.object(window, "run_service") as run_service:
+            window._dictation_settings_reloaded("Runtime settings applied", True)
+
+        run_service.assert_called_once()
+        self.assertEqual(run_service.call_args.args[:2], ("dictate", ["restart"]))
+        self.assertIn("dictate", window.service_restarts_in_progress)
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_engine_restart_waits_for_active_dictation_to_stop(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+        window.dictation_active = True
+
+        with patch.object(window, "run_service") as run_service:
+            window._dictation_settings_reloaded("Runtime settings applied", True)
+            run_service.assert_not_called()
+            self.assertIn("dictate", window.pending_service_restarts)
+            window._apply_status(
+                "dictate",
+                json.dumps({"state": "idle", "model_name": "parakeet"}),
+            )
+
+        self.assertEqual(run_service.call_args.args[:2], ("dictate", ["restart"]))
+        self.assertNotIn("dictate", window.pending_service_restarts)
+        window.tray.hide()
+        window.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

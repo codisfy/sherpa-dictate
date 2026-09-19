@@ -222,8 +222,13 @@ class TtsEngine:
         )
 
     def _run(self, text: str, stop_event: threading.Event) -> None:
+        with self.lock:
+            audio_queue_chunks = self.audio_queue_chunks
+            output_device = self.output_device
+            speaker_id = self.speaker_id
+            speed = self.speed
         audio_queue: queue.Queue[np.ndarray] = queue.Queue(
-            maxsize=self.audio_queue_chunks
+            maxsize=audio_queue_chunks
         )
         generation_done = threading.Event()
         playback_done = threading.Event()
@@ -281,7 +286,7 @@ class TtsEngine:
             with sd.OutputStream(
                 samplerate=self.tts.sample_rate,
                 blocksize=1024,
-                device=self.output_device,
+                device=output_device,
                 channels=1,
                 dtype="float32",
                 callback=playback_callback,
@@ -289,8 +294,8 @@ class TtsEngine:
             ):
                 audio = self.tts.generate(
                     text,
-                    sid=self.speaker_id,
-                    speed=self.speed,
+                    sid=speaker_id,
+                    speed=speed,
                     callback=generation_callback,
                 )
                 generation_done.set()
@@ -325,10 +330,12 @@ class TtsEngine:
         text = text.strip()
         if not text:
             raise ValueError("No text to read")
-        if len(text) > self.max_text_characters:
+        with self.lock:
+            max_text_characters = self.max_text_characters
+        if len(text) > max_text_characters:
             raise ValueError(
                 f"Selected text has {len(text)} characters; the configured maximum is "
-                f"{self.max_text_characters}"
+                f"{max_text_characters}"
             )
 
         with self.lock:
@@ -365,6 +372,40 @@ class TtsEngine:
             stop_event.set()
             self.state = "stopping"
         return {"ok": True, "state": "stopping", "message": "Reading stopped"}
+
+    def reload_runtime_settings(self) -> dict[str, Any]:
+        config = load_tts_config()
+        if not 0 <= int(config["speaker_id"]) < self.tts.num_speakers:
+            raise ValueError(
+                f"tts.speaker_id must be between 0 and {self.tts.num_speakers - 1}"
+            )
+        restart_keys = (
+            "model",
+            "voices",
+            "tokens",
+            "data_dir",
+            "num_threads",
+        )
+        restart_required = [
+            key for key in restart_keys if config.get(key) != self.config.get(key)
+        ]
+        with self.lock:
+            self.speaker_id = int(config["speaker_id"])
+            self.speed = float(config["speed"])
+            self.output_device = config["output_device"]
+            self.audio_queue_chunks = int(config["audio_queue_chunks"])
+            self.max_text_characters = int(config["max_text_characters"])
+            state = self.state
+        self.config = config
+        message = "Runtime text-to-speech settings applied"
+        if restart_required:
+            message += "; restart required for " + ", ".join(restart_required)
+        return {
+            "ok": True,
+            "state": state,
+            "message": message,
+            "restart_required": restart_required,
+        }
 
     def shutdown(self) -> None:
         self.stop()
@@ -417,6 +458,8 @@ def handle_request(engine: TtsEngine, request: dict[str, Any]) -> tuple[dict[str
         return engine.stop(), False
     if action == "status":
         return engine.status(), False
+    if action == "reload-settings":
+        return engine.reload_runtime_settings(), False
     if action == "quit":
         engine.shutdown()
         return {"ok": True, "state": "stopped", "message": "Reader stopped"}, True
@@ -573,9 +616,32 @@ def report_response(response: dict[str, Any], command: str) -> int:
     return 0
 
 
+def restart_client() -> int:
+    status = current_status()
+    if status and status.get("state") in {"speaking", "stopping"}:
+        print("Error: stop text-to-speech before restarting its background service", file=sys.stderr)
+        return 1
+    if status is not None:
+        request_daemon({"action": "quit"}, timeout=15)
+        deadline = time.monotonic() + 5
+        while SOCKET_PATH.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if SOCKET_PATH.exists():
+            raise TimeoutError("Reader daemon did not stop before restart")
+    start_daemon()
+    print("Text-to-speech background service restarted")
+    return 0
+
+
 def client_main(arguments: argparse.Namespace) -> int:
     if arguments.command == "daemon":
         return daemon_main()
+    if arguments.command == "restart":
+        try:
+            return restart_client()
+        except BaseException as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
 
     if arguments.command == "status":
         status = current_status()
@@ -591,6 +657,19 @@ def client_main(arguments: argparse.Namespace) -> int:
             return 0
         try:
             return report_response(request_daemon({"action": "quit"}), "quit")
+        except BaseException as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
+
+    if arguments.command == "reload-settings":
+        if not SOCKET_PATH.exists():
+            print("Reader daemon is not running; settings will be used when reading starts")
+            return 0
+        try:
+            return report_response(
+                request_daemon({"action": "reload-settings"}),
+                "reload-settings",
+            )
         except BaseException as error:
             print(f"Error: {error}", file=sys.stderr)
             return 1
@@ -635,7 +714,14 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers.add_parser("selection", help="Toggle reading of the desktop selection")
     speak = subparsers.add_parser("speak", help="Read an argument, or stdin when omitted")
     speak.add_argument("text", nargs="?")
-    for command in ("stop", "status", "quit", "daemon"):
+    for command in (
+        "stop",
+        "status",
+        "quit",
+        "daemon",
+        "reload-settings",
+        "restart",
+    ):
         subparsers.add_parser(command)
 
     arguments = parser.parse_args(argv)

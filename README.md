@@ -12,7 +12,7 @@ distributions, download the latest `.deb` from the
 then install it with:
 
 ```bash
-sudo apt install ./sherpa_0.1.0_amd64.deb
+sudo apt install ./sherpa_0.1.1_amd64.deb
 ```
 
 Open **Sherpa** from the application menu. Speech models are not bundled; the
@@ -100,7 +100,7 @@ and provides a Copy button for each fallback command.
 ```bash
 ./.venv/bin/pip install -r requirements-dev.txt
 ./build-release.sh
-./build-deb.sh 0.1.0
+./build-deb.sh 0.1.1
 ```
 
 This produces a self-contained application directory and a Debian package in
@@ -124,6 +124,7 @@ project.
 ./dictate stop
 ./dictate stop --no-paste
 ./dictate status
+./dictate reload-settings # apply runtime settings without unloading the model
 ./dictate quit         # unload the model and stop the background daemon
 ./dictate transcribe /path/to/16-bit-pcm.wav
 ```
@@ -279,6 +280,7 @@ Edit `config.toml` to change:
 - `speech_threshold`: RMS level treated as speech; lower it if speech is missed,
   or raise it if background noise triggers phrases
 - `max_phrase_seconds`: safety limit for speech without a pause
+- `audio_buffer_seconds`: raw microphone buffer used if processing briefly falls behind
 - `append_space_after_phrase`: separates successively inserted phrases
 - `spoken_punctuation`: enables the exact phrase commands listed above
 
@@ -292,9 +294,17 @@ The `[tts]` table configures the independent reader daemon:
 - `max_text_characters`: safety limit for one selection
 - `audio_queue_chunks`: bounded synthesis/playback buffer
 
+The app reloads voice, speed, and audio-output changes for the next reading
+without rebuilding the TTS model.
+
 The `[models.*]` tables define each model's backend, directory, and language
-settings. After manually editing configuration, restart the affected service
-with `./dictate quit` or `./read quit`; the next command reloads it.
+settings. The app applies text-insertion changes to a running dictation service
+immediately and safely restarts an idle recognizer when model-construction
+settings change. If dictation is active, that restart is deferred until its
+buffered work has drained. After manually editing configuration, run
+`./dictate reload-settings` for runtime dictation settings. Model construction
+settings still require `./dictate quit` or `./read quit`; the next command
+reloads the affected service.
 
 ## Recreate or remove the environment
 

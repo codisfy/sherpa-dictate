@@ -18,6 +18,7 @@ import time
 import tomllib
 import wave
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,24 @@ SPOKEN_COMMANDS = {
     "newline": "\n",
     "new paragraph": "\n\n",
 }
+
+_QUEUE_END = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _ContinuousPhrase:
+    chunks: tuple[Any, ...]
+    sample_count: int
+    voiced_sample_count: int
+    first: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _TranscribedPhrase:
+    text: str
+    sample_count: int
+    voiced_sample_count: int
+    first: bool
 
 
 def split_offline_chunks(
@@ -192,35 +211,10 @@ class DictationEngine:
         self.model_type = str(config.get("model_type", "nemo_transducer"))
         self.language = str(config.get("language", "auto"))
         self.input_sample_rate = int(config.get("input_sample_rate", 48000))
-        self.audio_device = config.get("audio_device") or None
         self.num_threads = int(config.get("num_threads", 4))
-        self.paste_delay = int(config.get("paste_delay_ms", 180)) / 1000
-        self.output_method = str(config.get("output_method", "type")).lower()
-        self.typing_key_delay = int(config.get("typing_key_delay_ms", 2))
-        self.typing_key_hold = int(config.get("typing_key_hold_ms", 2))
-        self.clipboard_sensitive = bool(config.get("clipboard_sensitive", True))
-        self.clipboard_shortcut = str(
-            config.get("clipboard_shortcut", "ctrl_shift_v")
-        ).lower()
-        self.clipboard_clear_delay = (
-            int(config.get("clipboard_clear_after_paste_ms", 500)) / 1000
-        )
         self.warm_up_model = bool(config.get("warm_up_model", True))
-        self.warm_up_output = bool(config.get("warm_up_output", True))
-        self.silence_seconds = int(config.get("silence_ms", 900)) / 1000
-        self.pre_roll_seconds = int(config.get("pre_roll_ms", 300)) / 1000
-        self.first_phrase_pre_roll_seconds = (
-            int(config.get("first_phrase_pre_roll_ms", 2000)) / 1000
-        )
-        self.min_speech_seconds = int(config.get("min_speech_ms", 250)) / 1000
-        self.max_phrase_seconds = float(config.get("max_phrase_seconds", 30))
-        self.speech_threshold = float(config.get("speech_threshold", 0.012))
-        self.append_space = bool(config.get("append_space_after_phrase", True))
-        self.spoken_punctuation = bool(config.get("spoken_punctuation", True))
-        if self.output_method not in {"type", "clipboard"}:
-            raise ValueError("output_method must be 'type' or 'clipboard'")
-        if self.clipboard_shortcut not in {"ctrl_v", "ctrl_shift_v"}:
-            raise ValueError("clipboard_shortcut must be 'ctrl_v' or 'ctrl_shift_v'")
+        self.settings_lock = threading.Lock()
+        self._apply_runtime_settings(config)
 
         logging.info(
             "Loading model profile=%s backend=%s from %s",
@@ -255,13 +249,100 @@ class DictationEngine:
         self.input_stream: sd.InputStream | None = None
         self.recognition_stream: Any = None
         self.audio_queue: queue.Queue[np.ndarray] | None = None
+        self.phrase_queue: queue.Queue[Any] | None = None
+        self.output_queue: queue.Queue[Any] | None = None
         self.stop_event: threading.Event | None = None
-        self.worker: threading.Thread | None = None
+        self.workers: list[threading.Thread] = []
         self.worker_result = ""
         self.worker_error: BaseException | None = None
         self.overflowed = False
         self.phrases_pasted = 0
         self.paste_warning = ""
+
+    def _apply_runtime_settings(self, config: dict[str, Any]) -> None:
+        output_method = str(config.get("output_method", "type")).lower()
+        clipboard_shortcut = str(
+            config.get("clipboard_shortcut", "ctrl_shift_v")
+        ).lower()
+        audio_buffer_seconds = float(config.get("audio_buffer_seconds", 120))
+        if output_method not in {"type", "clipboard"}:
+            raise ValueError("output_method must be 'type' or 'clipboard'")
+        if clipboard_shortcut not in {"ctrl_v", "ctrl_shift_v"}:
+            raise ValueError("clipboard_shortcut must be 'ctrl_v' or 'ctrl_shift_v'")
+        if audio_buffer_seconds <= 0:
+            raise ValueError("audio_buffer_seconds must be greater than zero")
+
+        with self.settings_lock:
+            self.audio_device = config.get("audio_device") or None
+            self.paste_delay = int(config.get("paste_delay_ms", 180)) / 1000
+            self.output_method = output_method
+            self.typing_key_delay = int(config.get("typing_key_delay_ms", 2))
+            self.typing_key_hold = int(config.get("typing_key_hold_ms", 2))
+            self.clipboard_sensitive = bool(config.get("clipboard_sensitive", True))
+            self.clipboard_shortcut = clipboard_shortcut
+            self.clipboard_clear_delay = (
+                int(config.get("clipboard_clear_after_paste_ms", 500)) / 1000
+            )
+            self.warm_up_output = bool(config.get("warm_up_output", True))
+            self.silence_seconds = int(config.get("silence_ms", 900)) / 1000
+            self.pre_roll_seconds = int(config.get("pre_roll_ms", 300)) / 1000
+            self.first_phrase_pre_roll_seconds = (
+                int(config.get("first_phrase_pre_roll_ms", 2000)) / 1000
+            )
+            self.min_speech_seconds = int(config.get("min_speech_ms", 250)) / 1000
+            self.max_phrase_seconds = float(config.get("max_phrase_seconds", 30))
+            self.speech_threshold = float(config.get("speech_threshold", 0.012))
+            self.append_space = bool(config.get("append_space_after_phrase", True))
+            self.spoken_punctuation = bool(config.get("spoken_punctuation", True))
+            self.audio_buffer_seconds = audio_buffer_seconds
+
+    def reload_runtime_settings(self) -> dict[str, Any]:
+        config = load_config()
+        with self.settings_lock:
+            previous_output_method = self.output_method
+        restart_fields = {
+            "model_name": self.model_name,
+            "model_dir": self.model_dir,
+            "backend": self.backend,
+            "model_type": self.model_type,
+            "input_sample_rate": self.input_sample_rate,
+            "num_threads": self.num_threads,
+        }
+        restart_required = [
+            name
+            for name, current in restart_fields.items()
+            if config.get(name) != current
+        ]
+        self._apply_runtime_settings(config)
+        self.config = config
+        output_warning = ""
+        if previous_output_method != "type" and self.output_method == "type":
+            with self.settings_lock:
+                warm_up_output = self.warm_up_output
+                typing_key_delay = self.typing_key_delay
+                typing_key_hold = self.typing_key_hold
+            if warm_up_output:
+                warmed, output_warning = type_into_active_window(
+                    "",
+                    key_delay=typing_key_delay,
+                    key_hold=typing_key_hold,
+                )
+                if not warmed:
+                    logging.warning(
+                        "Direct-typing output warm-up after settings reload failed: %s",
+                        output_warning,
+                    )
+        message = "Runtime dictation settings applied"
+        if restart_required:
+            message += "; restart required for " + ", ".join(restart_required)
+        return {
+            "ok": True,
+            "state": "listening" if self.listening else "idle",
+            "message": message,
+            "output_method": self.output_method,
+            "restart_required": restart_required,
+            "warning": output_warning,
+        }
 
     def _warm_up_recognizer(self) -> None:
         started = time.monotonic()
@@ -321,15 +402,23 @@ class DictationEngine:
         return self.recognizer.get_result(stream).strip()
 
     def _send_text(self, text: str) -> dict[str, Any]:
+        with self.settings_lock:
+            method = self.output_method
+            paste_delay = self.paste_delay
+            typing_key_delay = self.typing_key_delay
+            typing_key_hold = self.typing_key_hold
+            clipboard_sensitive = self.clipboard_sensitive
+            clipboard_shortcut = self.clipboard_shortcut
+            clipboard_clear_delay = self.clipboard_clear_delay
         return send_text_to_active_window(
             text=text,
-            method=self.output_method,
-            paste_delay=self.paste_delay,
-            typing_key_delay=self.typing_key_delay,
-            typing_key_hold=self.typing_key_hold,
-            clipboard_sensitive=self.clipboard_sensitive,
-            clipboard_shortcut=self.clipboard_shortcut,
-            clipboard_clear_delay=self.clipboard_clear_delay,
+            method=method,
+            paste_delay=paste_delay,
+            typing_key_delay=typing_key_delay,
+            typing_key_hold=typing_key_hold,
+            clipboard_sensitive=clipboard_sensitive,
+            clipboard_shortcut=clipboard_shortcut,
+            clipboard_clear_delay=clipboard_clear_delay,
         )
 
     def _decode_worker(self) -> None:
@@ -351,8 +440,9 @@ class DictationEngine:
             self.worker_error = error
             logging.exception("Recognition worker failed")
 
-    def _continuous_decode_worker(self) -> None:
+    def _continuous_segment_worker(self) -> None:
         assert self.audio_queue is not None
+        assert self.phrase_queue is not None
         assert self.stop_event is not None
 
         pre_roll: deque[np.ndarray] = deque()
@@ -364,71 +454,40 @@ class DictationEngine:
         silence_limit = int(self.silence_seconds * self.input_sample_rate)
         min_speech_samples = int(self.min_speech_seconds * self.input_sample_rate)
         max_phrase_samples = int(self.max_phrase_seconds * self.input_sample_rate)
-        stream: Any = None
+        phrase_chunks: list[np.ndarray] = []
         phrase_samples = 0
         voiced_samples = 0
         silent_samples = 0
-        transcripts: list[str] = []
-        output_started = False
-        last_output_character = ""
         first_phrase_captured = False
 
         def finish_phrase() -> None:
-            nonlocal stream, phrase_samples, voiced_samples, silent_samples
-            nonlocal output_started, last_output_character
+            nonlocal phrase_chunks, phrase_samples, voiced_samples, silent_samples
             nonlocal first_phrase_captured
-            if stream is None:
+            if not phrase_chunks:
                 return
 
-            text = self._finalize_stream(stream)
-            if text and voiced_samples >= min_speech_samples:
-                transcripts.append(text)
-                was_first_phrase = not first_phrase_captured
+            if voiced_samples >= min_speech_samples:
+                phrase = _ContinuousPhrase(
+                    chunks=tuple(phrase_chunks),
+                    sample_count=phrase_samples,
+                    voiced_sample_count=voiced_samples,
+                    first=not first_phrase_captured,
+                )
+                self.phrase_queue.put(phrase)
                 first_phrase_captured = True
-                if self.continuous_paste:
-                    command_text = spoken_command_output(text) if self.spoken_punctuation else None
-                    if command_text is not None:
-                        if command_text in ".!?" and command_text == last_output_character:
-                            output_text = ""
-                        else:
-                            output_text = command_text
-                    else:
-                        needs_space = (
-                            output_started
-                            and self.append_space
-                            and last_output_character not in {"", "\n"}
-                        )
-                        output_text = (" " if needs_space else "") + text
-
-                    paste_result = (
-                        self._send_text(output_text)
-                        if output_text
-                        else {"pasted": True, "warning": "", "input_method": "none"}
-                    )
-                    if paste_result.get("pasted"):
-                        self.phrases_pasted += 1
-                        if output_text:
-                            output_started = True
-                            last_output_character = output_text[-1]
-                    if paste_result.get("warning"):
-                        self.paste_warning = str(paste_result["warning"])
                 logging.info(
-                    "Continuous phrase finalized; first=%s audio_ms=%d "
-                    "voiced_ms=%d transcription_length=%d output_method=%s",
-                    was_first_phrase,
+                    "Continuous phrase buffered; first=%s audio_ms=%d voiced_ms=%d",
+                    phrase.first,
                     round(phrase_samples * 1000 / self.input_sample_rate),
                     round(voiced_samples * 1000 / self.input_sample_rate),
-                    len(text),
-                    self.output_method if self.continuous_paste else "disabled",
                 )
             else:
                 logging.info(
-                    "Continuous phrase discarded; transcription length=%d voiced_ms=%d",
-                    len(text),
+                    "Continuous phrase discarded before transcription; voiced_ms=%d",
                     round(voiced_samples * 1000 / self.input_sample_rate),
                 )
 
-            stream = None
+            phrase_chunks = []
             phrase_samples = 0
             voiced_samples = 0
             silent_samples = 0
@@ -443,7 +502,7 @@ class DictationEngine:
                 rms = float(np.sqrt(np.mean(np.square(samples), dtype=np.float64)))
                 is_speech = rms >= self.speech_threshold
 
-                if stream is None:
+                if not phrase_chunks:
                     pre_roll.append(samples)
                     pre_roll_samples += samples.size
                     pre_roll_limit = (
@@ -457,17 +516,15 @@ class DictationEngine:
                     if not is_speech:
                         continue
 
-                    stream = self._new_recognition_stream()
-                    for buffered_samples in pre_roll:
-                        self._accept_and_decode(stream, buffered_samples)
-                        phrase_samples += buffered_samples.size
+                    phrase_chunks = list(pre_roll)
+                    phrase_samples = pre_roll_samples
                     pre_roll.clear()
                     pre_roll_samples = 0
                     voiced_samples = samples.size
                     silent_samples = 0
                     continue
 
-                self._accept_and_decode(stream, samples)
+                phrase_chunks.append(samples)
                 phrase_samples += samples.size
                 if is_speech:
                     voiced_samples += samples.size
@@ -481,10 +538,127 @@ class DictationEngine:
                     pre_roll_samples = 0
 
             finish_phrase()
+        except BaseException as error:
+            if self.worker_error is None:
+                self.worker_error = error
+            logging.exception("Continuous segmentation worker failed")
+        finally:
+            self.phrase_queue.put(_QUEUE_END)
+
+    def _recognize_continuous_phrase(self, phrase: _ContinuousPhrase) -> str:
+        stream = self._new_recognition_stream()
+        for samples in phrase.chunks:
+            self._accept_and_decode(stream, samples)
+        return self._finalize_stream(stream)
+
+    def _continuous_recognition_worker(self) -> None:
+        assert self.phrase_queue is not None
+        assert self.output_queue is not None
+
+        transcripts: list[str] = []
+        try:
+            while True:
+                phrase = self.phrase_queue.get()
+                if phrase is _QUEUE_END:
+                    break
+                assert isinstance(phrase, _ContinuousPhrase)
+                text = self._recognize_continuous_phrase(phrase)
+                if not text:
+                    logging.info(
+                        "Continuous phrase discarded after transcription; voiced_ms=%d",
+                        round(
+                            phrase.voiced_sample_count
+                            * 1000
+                            / self.input_sample_rate
+                        ),
+                    )
+                    continue
+                transcripts.append(text)
+                self.output_queue.put(
+                    _TranscribedPhrase(
+                        text=text,
+                        sample_count=phrase.sample_count,
+                        voiced_sample_count=phrase.voiced_sample_count,
+                        first=phrase.first,
+                    )
+                )
             self.worker_result = "\n".join(transcripts)
         except BaseException as error:
-            self.worker_error = error
+            if self.worker_error is None:
+                self.worker_error = error
             logging.exception("Continuous recognition worker failed")
+        finally:
+            self.output_queue.put(_QUEUE_END)
+
+    def _continuous_output_worker(self) -> None:
+        assert self.output_queue is not None
+
+        output_started = False
+        last_output_character = ""
+        try:
+            while True:
+                phrase = self.output_queue.get()
+                if phrase is _QUEUE_END:
+                    break
+                assert isinstance(phrase, _TranscribedPhrase)
+
+                with self.settings_lock:
+                    spoken_punctuation = self.spoken_punctuation
+                    append_space = self.append_space
+                    output_method = self.output_method
+
+                if self.continuous_paste:
+                    command_text = (
+                        spoken_command_output(phrase.text)
+                        if spoken_punctuation
+                        else None
+                    )
+                    if command_text is not None:
+                        if (
+                            command_text in ".!?"
+                            and command_text == last_output_character
+                        ):
+                            output_text = ""
+                        else:
+                            output_text = command_text
+                    else:
+                        needs_space = (
+                            output_started
+                            and append_space
+                            and last_output_character not in {"", "\n"}
+                        )
+                        output_text = (" " if needs_space else "") + phrase.text
+
+                    paste_result = (
+                        self._send_text(output_text)
+                        if output_text
+                        else {"pasted": True, "warning": "", "input_method": "none"}
+                    )
+                    if paste_result.get("pasted"):
+                        self.phrases_pasted += 1
+                        if output_text:
+                            output_started = True
+                            last_output_character = output_text[-1]
+                    if paste_result.get("warning"):
+                        self.paste_warning = str(paste_result["warning"])
+
+                logging.info(
+                    "Continuous phrase finalized; first=%s audio_ms=%d "
+                    "voiced_ms=%d transcription_length=%d output_method=%s",
+                    phrase.first,
+                    round(phrase.sample_count * 1000 / self.input_sample_rate),
+                    round(
+                        phrase.voiced_sample_count
+                        * 1000
+                        / self.input_sample_rate
+                    ),
+                    len(phrase.text),
+                    output_method if self.continuous_paste else "disabled",
+                )
+        except BaseException as error:
+            if self.worker_error is None:
+                self.worker_error = error
+            logging.exception("Continuous output worker failed")
 
     def _audio_callback(
         self,
@@ -515,18 +689,31 @@ class DictationEngine:
                 "message": f"Already listening in {self.mode} mode",
             }
 
-        if self.output_method == "type" and self.warm_up_output:
+        with self.settings_lock:
+            output_method = self.output_method
+            warm_up_output = self.warm_up_output
+            typing_key_delay = self.typing_key_delay
+            typing_key_hold = self.typing_key_hold
+            audio_buffer_seconds = self.audio_buffer_seconds
+            audio_device = self.audio_device
+
+        if output_method == "type" and warm_up_output:
             warmed, warning = type_into_active_window(
                 "",
-                key_delay=self.typing_key_delay,
-                key_hold=self.typing_key_hold,
+                key_delay=typing_key_delay,
+                key_hold=typing_key_hold,
             )
             if warmed:
                 logging.info("Direct-typing output warm-up completed")
             else:
                 logging.warning("Direct-typing output warm-up failed: %s", warning)
 
-        self.audio_queue = queue.Queue(maxsize=200)
+        block_seconds = 0.1
+        self.audio_queue = queue.Queue(
+            maxsize=max(1, round(audio_buffer_seconds / block_seconds))
+        )
+        self.phrase_queue = queue.Queue() if mode == "continuous" else None
+        self.output_queue = queue.Queue() if mode == "continuous" else None
         self.stop_event = threading.Event()
         self.recognition_stream = self._new_recognition_stream() if mode == "manual" else None
         self.worker_result = ""
@@ -535,15 +722,40 @@ class DictationEngine:
         self.phrases_pasted = 0
         self.paste_warning = ""
         self.continuous_paste = paste
-        worker_target = self._decode_worker if mode == "manual" else self._continuous_decode_worker
-        self.worker = threading.Thread(target=worker_target, name="recognizer", daemon=True)
-        self.worker.start()
+        if mode == "manual":
+            self.workers = [
+                threading.Thread(
+                    target=self._decode_worker,
+                    name="recognizer",
+                    daemon=True,
+                )
+            ]
+        else:
+            self.workers = [
+                threading.Thread(
+                    target=self._continuous_output_worker,
+                    name="dictation-output",
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=self._continuous_recognition_worker,
+                    name="dictation-recognizer",
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=self._continuous_segment_worker,
+                    name="dictation-segmenter",
+                    daemon=True,
+                ),
+            ]
+        for worker in self.workers:
+            worker.start()
 
         try:
             self.input_stream = sd.InputStream(
                 samplerate=self.input_sample_rate,
-                blocksize=int(self.input_sample_rate * 0.1),
-                device=self.audio_device,
+                blocksize=int(self.input_sample_rate * block_seconds),
+                device=audio_device,
                 channels=1,
                 dtype="float32",
                 callback=self._audio_callback,
@@ -551,7 +763,8 @@ class DictationEngine:
             self.input_stream.start()
         except BaseException:
             self.stop_event.set()
-            self.worker.join(timeout=5)
+            for worker in self.workers:
+                worker.join(timeout=5)
             self.input_stream = None
             raise
 
@@ -578,7 +791,7 @@ class DictationEngine:
             return {"ok": True, "state": "idle", "message": "Not listening", "text": ""}
 
         assert self.stop_event is not None
-        assert self.worker is not None
+        assert self.workers
 
         previous_mode = self.mode
         self.listening = False
@@ -590,8 +803,10 @@ class DictationEngine:
             self.input_stream = None
 
         self.stop_event.set()
-        self.worker.join(timeout=120)
-        if self.worker.is_alive():
+        deadline = time.monotonic() + 120
+        for worker in self.workers:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+        if any(worker.is_alive() for worker in self.workers):
             raise TimeoutError("Timed out while finalizing transcription")
         if self.worker_error is not None:
             raise RuntimeError(f"Transcription failed: {self.worker_error}")
@@ -903,6 +1118,8 @@ def handle_request(engine: DictationEngine, request: dict[str, Any]) -> tuple[di
         return engine.stop(paste=bool(request.get("paste", True))), False
     if action == "status":
         return engine.status(), False
+    if action == "reload-settings":
+        return engine.reload_runtime_settings(), False
     if action == "transcribe":
         return engine.transcribe_wave(str(request["filename"])), False
     if action == "quit":
@@ -1092,17 +1309,49 @@ def model_client(requested_model: str | None) -> int:
     return 0
 
 
+def restart_client() -> int:
+    status: dict[str, Any] | None = None
+    if SOCKET_PATH.exists():
+        try:
+            status = request_daemon({"action": "status"}, timeout=3)
+        except (ConnectionError, OSError, RuntimeError):
+            status = None
+    if status and status.get("state") == "listening":
+        print("Error: stop dictation before restarting its background service", file=sys.stderr)
+        return 1
+    if status is not None:
+        request_daemon({"action": "quit"}, timeout=180)
+        deadline = time.monotonic() + 5
+        while SOCKET_PATH.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if SOCKET_PATH.exists():
+            raise TimeoutError("Dictation daemon did not stop before restart")
+    start_daemon()
+    print("Dictation background service restarted")
+    return 0
+
+
 def client_main(arguments: argparse.Namespace) -> int:
     if arguments.command == "daemon":
         return daemon_main()
     if arguments.command == "model":
         return model_client(arguments.name)
+    if arguments.command == "restart":
+        try:
+            return restart_client()
+        except BaseException as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
 
     if arguments.command == "status" and not SOCKET_PATH.exists():
         print("Daemon is not running")
         return 1
-    if arguments.command == "quit" and not SOCKET_PATH.exists():
-        print("Daemon is not running")
+    if arguments.command in {"quit", "reload-settings"} and not SOCKET_PATH.exists():
+        print(
+            "Daemon is not running; settings will be used when dictation starts"
+            if arguments.command == "reload-settings"
+            else "Daemon is not running"
+        )
         return 0
 
     payload: dict[str, Any] = {"action": arguments.command}
@@ -1114,7 +1363,7 @@ def client_main(arguments: argparse.Namespace) -> int:
     try:
         response = send_with_autostart(
             payload,
-            autostart=arguments.command not in {"status", "quit"},
+            autostart=arguments.command not in {"status", "quit", "reload-settings"},
         )
     except BaseException as error:
         notify("Dictation error", str(error))
@@ -1159,7 +1408,15 @@ def client_main(arguments: argparse.Namespace) -> int:
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local Sherpa-ONNX dictation")
     subparsers = parser.add_subparsers(dest="command")
-    for command in ("toggle", "start", "status", "quit", "daemon"):
+    for command in (
+        "toggle",
+        "start",
+        "status",
+        "quit",
+        "daemon",
+        "reload-settings",
+        "restart",
+    ):
         subparsers.add_parser(command)
     continuous = subparsers.add_parser(
         "continuous",

@@ -160,6 +160,8 @@ class SherpaWindow(QMainWindow):
         self.settings = load_settings()
         self.processes: set[QProcess] = set()
         self.status_pending: set[str] = set()
+        self.pending_service_restarts: set[str] = set()
+        self.service_restarts_in_progress: set[str] = set()
         self.download_thread: ModelDownloadThread | None = None
         self.model_rows: dict[str, dict[str, Any]] = {}
         self.dictation_active = False
@@ -412,8 +414,10 @@ class SherpaWindow(QMainWindow):
         layout.addLayout(form)
 
         note = QLabel(
-            "Audio remains on this device. Changed engine settings apply the next time "
-            "the corresponding background service starts."
+            "Audio remains on this device. Text insertion changes apply immediately. "
+            "Microphone and pause settings apply to the next dictation, and voice settings "
+            "to the next reading. Settings that rebuild a model restart it automatically "
+            "when idle, or after current work stops."
         )
         note.setWordWrap(True)
         note.setObjectName("muted")
@@ -734,14 +738,23 @@ class SherpaWindow(QMainWindow):
 
         if service == "dictate":
             self.dictation_active = status.get("state") == "listening"
-            detail = (
-                f"Listening · {status.get('model_name', 'model')}"
-                if self.dictation_active
-                else "Not running"
-            )
+            restarting = service in self.service_restarts_in_progress
+            if restarting:
+                detail = "Restarting background service"
+            elif self.dictation_active:
+                detail = f"Listening · {status.get('model_name', 'model')}"
+            else:
+                detail = "Not running"
             self.dictation_card.set_state(self.dictation_active, detail)
-            self.tray_start_dictation.setEnabled(not self.dictation_active)
-            self.tray_stop_dictation.setEnabled(self.dictation_active)
+            self.tray_start_dictation.setEnabled(
+                not self.dictation_active and not restarting
+            )
+            self.tray_stop_dictation.setEnabled(
+                self.dictation_active and not restarting
+            )
+            if restarting:
+                self.dictation_card.start_button.setEnabled(False)
+                self.dictation_card.stop_button.setEnabled(False)
         else:
             self.reader_active = status.get("state") in {"speaking", "stopping"}
             detail = "Reading" if self.reader_active else "Not running"
@@ -755,6 +768,13 @@ class SherpaWindow(QMainWindow):
         if self.reader_active:
             states.append("reading")
         self.tray.setToolTip("Sherpa · " + (" and ".join(states).title() if states else "Ready"))
+        if (
+            service in self.pending_service_restarts
+            and not self._quitting
+            and not (self.dictation_active if service == "dictate" else self.reader_active)
+        ):
+            self.pending_service_restarts.discard(service)
+            self._restart_service(service)
 
     def refresh_model_rows(self) -> None:
         active_model = str(load_settings().get("active_model") or "")
@@ -862,6 +882,7 @@ class SherpaWindow(QMainWindow):
 
     def save_user_settings(self) -> None:
         latest = load_settings()
+        previous_threads = latest.get("dictation", {}).get("num_threads", 8)
         latest["dictation"] = {
             **latest.get("dictation", {}),
             "audio_device": self._device_value(self.input_device.text()),
@@ -880,7 +901,71 @@ class SherpaWindow(QMainWindow):
         latest["start_minimized"] = self.start_minimized.isChecked()
         save_settings(latest)
         self.settings = latest
-        self.activity_label.setText("Settings saved. They apply when each service next starts.")
+        restart_dictation = previous_threads != latest["dictation"]["num_threads"]
+        self.run_service(
+            "dictate",
+            ["reload-settings"],
+            lambda output: self._dictation_settings_reloaded(
+                output,
+                restart_dictation,
+            ),
+        )
+        self.run_service(
+            "read",
+            ["reload-settings"],
+            self._tts_settings_reloaded,
+        )
+
+    def _dictation_settings_reloaded(
+        self,
+        output: str,
+        restart_required: bool = False,
+    ) -> None:
+        detail = output or "Dictation settings will be used when dictation starts"
+        if restart_required:
+            self._queue_or_restart_service("dictate")
+            if self.dictation_active:
+                detail += "; recognizer restart queued until dictation stops"
+            else:
+                detail += "; restarting recognizer"
+        self.activity_label.setText(f"Settings saved. {detail}")
+
+    def _tts_settings_reloaded(self, output: str) -> None:
+        if output:
+            self.activity_label.setText(f"Settings saved. {output}")
+
+    def _queue_or_restart_service(self, service: str) -> None:
+        active = self.dictation_active if service == "dictate" else self.reader_active
+        if active:
+            self.pending_service_restarts.add(service)
+            return
+        self._restart_service(service)
+
+    def _restart_service(self, service: str) -> None:
+        if service in self.service_restarts_in_progress or self._quitting:
+            return
+        self.service_restarts_in_progress.add(service)
+        if service == "dictate":
+            self.dictation_card.start_button.setEnabled(False)
+            self.dictation_card.stop_button.setEnabled(False)
+            self.tray_start_dictation.setEnabled(False)
+            self.tray_stop_dictation.setEnabled(False)
+        self.run_service(
+            service,
+            ["restart"],
+            lambda output, name=service: self._service_restart_finished(name, output),
+        )
+
+    def _service_restart_finished(self, service: str, output: str) -> None:
+        self.service_restarts_in_progress.discard(service)
+        if "stop dictation before restarting" in output.casefold():
+            self.pending_service_restarts.add(service)
+            self.activity_label.setText(
+                "Settings saved. Restart will run after dictation stops."
+            )
+        else:
+            self.activity_label.setText(output or f"{service.title()} service restarted")
+        self.refresh_status()
 
     def reset_user_settings(self) -> None:
         answer = QMessageBox.question(
@@ -892,6 +977,7 @@ class SherpaWindow(QMainWindow):
             return
 
         current = load_settings()
+        previous_threads = current.get("dictation", {}).get("num_threads", 8)
         defaults = default_settings()
         defaults["model_paths"] = dict(current.get("model_paths", {}))
         save_settings(defaults)
@@ -909,7 +995,36 @@ class SherpaWindow(QMainWindow):
         self.start_minimized.setChecked(False)
         self.storage_label.setText(str(defaults["model_storage_dir"]))
         self.refresh_model_rows()
-        self.activity_label.setText("Settings reset to defaults. Downloaded models were kept.")
+        self.run_service(
+            "dictate",
+            ["reload-settings"],
+            lambda output: self._dictation_defaults_reloaded(
+                output,
+                previous_threads != 8,
+            ),
+        )
+        self.run_service(
+            "read",
+            ["reload-settings"],
+            self._tts_settings_reloaded,
+        )
+
+    def _dictation_defaults_reloaded(
+        self,
+        output: str,
+        restart_required: bool = False,
+    ) -> None:
+        detail = output or "Defaults will be used when dictation starts"
+        if restart_required:
+            self._queue_or_restart_service("dictate")
+            detail += (
+                "; recognizer restart queued until dictation stops"
+                if self.dictation_active
+                else "; restarting recognizer"
+            )
+        self.activity_label.setText(
+            f"Settings reset to defaults. Downloaded models were kept. {detail}"
+        )
 
     @staticmethod
     def _device_value(text: str) -> str | int:

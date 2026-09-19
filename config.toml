@@ -130,6 +130,11 @@ min_speech_ms = 250
 # For offline Parakeet this also caps the main per-phrase audio buffer.
 max_phrase_seconds = 30
 
+# Raw microphone audio retained if phrase processing briefly falls behind.
+# Continuous dictation also separates phrase detection, transcription, and
+# text insertion so slow typing cannot pause microphone processing.
+audio_buffer_seconds = 120
+
 # RMS amplitude that counts as speech. Microphone samples use a normalized
 # 0.0-1.0 scale:
 #   lower value  -> detects quieter speech, but triggers more background noise
