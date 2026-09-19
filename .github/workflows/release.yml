@@ -34,7 +34,7 @@ jobs:
       - name: Build Debian package
         run: ./build-deb.sh "${GITHUB_REF_NAME#v}"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: sherpa-linux
           path: dist/*.deb
