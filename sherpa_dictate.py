@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -854,6 +855,7 @@ class DictationEngine:
         return self.stop(paste=paste) if self.listening else self.start_continuous(paste=paste)
 
     def transcribe_wave(self, filename: str) -> dict[str, Any]:
+        """Transcribe a PCM WAV file without requiring ffmpeg."""
         if self.listening:
             raise RuntimeError("Stop microphone dictation before transcribing a file")
 
@@ -872,7 +874,68 @@ class DictationEngine:
         if channels > 1:
             samples = samples.reshape(-1, channels).mean(axis=1)
 
-        stream = self.recognizer.create_stream()
+        return self._transcribe_audio(samples, sample_rate)
+
+    def transcribe_file(self, filename: str) -> dict[str, Any]:
+        """Decode and transcribe a common audio or video file."""
+        if self.listening:
+            raise RuntimeError("Stop microphone dictation before transcribing a file")
+
+        media_path = Path(filename).expanduser().resolve()
+        if not media_path.is_file():
+            raise FileNotFoundError(f"Media file not found: {media_path}")
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            if media_path.suffix.casefold() == ".wav":
+                return self.transcribe_wave(str(media_path))
+            raise RuntimeError(
+                "ffmpeg is required to transcribe MP3, M4A, FLAC, OGG, and video files"
+            )
+
+        with tempfile.TemporaryDirectory(prefix="sherpa-transcribe-") as temporary:
+            decoded_path = Path(temporary) / "audio.f32"
+            decoded = subprocess.run(
+                [
+                    ffmpeg,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(media_path),
+                    "-map",
+                    "0:a:0",
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-acodec",
+                    "pcm_f32le",
+                    "-f",
+                    "f32le",
+                    "-y",
+                    str(decoded_path),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if decoded.returncode != 0:
+                detail = decoded.stderr.decode(errors="replace").strip()
+                raise RuntimeError(detail or "ffmpeg could not decode the selected file")
+            if not decoded_path.is_file() or decoded_path.stat().st_size == 0:
+                raise ValueError("The selected file does not contain a readable audio track")
+            samples = np.memmap(decoded_path, dtype="<f4", mode="r")
+            try:
+                return self._transcribe_audio(samples, 16000)
+            finally:
+                del samples
+
+    def _transcribe_audio(self, samples: Any, sample_rate: int) -> dict[str, Any]:
+        """Recognize normalized mono floating-point samples."""
+
         if self.backend == "offline":
             texts: list[str] = []
             for chunk in split_offline_chunks(samples, sample_rate):
@@ -884,6 +947,7 @@ class DictationEngine:
                     texts.append(chunk_text)
             text = " ".join(texts)
         else:
+            stream = self.recognizer.create_stream()
             if self.language:
                 stream.set_option("language", self.language)
             chunk_size = max(1, int(sample_rate * 0.1))
@@ -1121,7 +1185,7 @@ def handle_request(engine: DictationEngine, request: dict[str, Any]) -> tuple[di
     if action == "reload-settings":
         return engine.reload_runtime_settings(), False
     if action == "transcribe":
-        return engine.transcribe_wave(str(request["filename"])), False
+        return engine.transcribe_file(str(request["filename"])), False
     if action == "quit":
         if engine.listening:
             engine.stop(paste=False)
@@ -1251,14 +1315,18 @@ def start_daemon() -> None:
     raise TimeoutError(f"Daemon did not start; inspect {LOG_PATH}")
 
 
-def send_with_autostart(payload: dict[str, Any], autostart: bool = True) -> dict[str, Any]:
+def send_with_autostart(
+    payload: dict[str, Any],
+    autostart: bool = True,
+    timeout: float = 180,
+) -> dict[str, Any]:
     try:
-        return request_daemon(payload)
+        return request_daemon(payload, timeout=timeout)
     except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError, OSError):
         if not autostart:
             raise
         start_daemon()
-        return request_daemon(payload)
+        return request_daemon(payload, timeout=timeout)
 
 
 def model_client(requested_model: str | None) -> int:
@@ -1364,6 +1432,7 @@ def client_main(arguments: argparse.Namespace) -> int:
         response = send_with_autostart(
             payload,
             autostart=arguments.command not in {"status", "quit", "reload-settings"},
+            timeout=86400 if arguments.command == "transcribe" else 180,
         )
     except BaseException as error:
         notify("Dictation error", str(error))
@@ -1432,7 +1501,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     stop = subparsers.add_parser("stop")
     stop.add_argument("--no-paste", action="store_true", help="Finalize without pasting")
-    transcribe = subparsers.add_parser("transcribe", help="Transcribe a 16-bit PCM WAV file")
+    transcribe = subparsers.add_parser(
+        "transcribe", help="Transcribe a saved audio or video file"
+    )
     transcribe.add_argument("filename")
     model = subparsers.add_parser("model", help="Show or select the ASR model")
     model.add_argument("name", nargs="?", help="Model profile name")

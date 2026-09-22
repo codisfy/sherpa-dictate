@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QPoint, QProcess, QRectF, QSize, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QCloseEvent, QIcon, QPainter
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QIcon, QPainter, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -170,6 +171,7 @@ class SherpaWindow(QMainWindow):
         self.model_rows: dict[str, dict[str, Any]] = {}
         self.dictation_active = False
         self.reader_active = False
+        self.media_transcription_active = False
         self._close_notice_shown = False
         self._quitting = False
         self._quit_started = False
@@ -222,6 +224,7 @@ class SherpaWindow(QMainWindow):
     def _build_home_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setSizeConstraint(QLayout.SetMinimumSize)
         layout.setContentsMargins(4, 24, 4, 4)
         layout.setSpacing(18)
 
@@ -257,12 +260,54 @@ class SherpaWindow(QMainWindow):
         cards.addWidget(self.reader_card, 0, 1)
         layout.addLayout(cards)
 
-        self.activity_label = QLabel("Ready")
+        media_row = QFrame()
+        media_row.setObjectName("serviceCard")
+        media_layout = QHBoxLayout(media_row)
+        media_layout.setContentsMargins(18, 14, 18, 14)
+        media_text = QVBoxLayout()
+        media_title = QLabel("Saved audio or video")
+        media_title.setObjectName("modelTitle")
+        media_description = QLabel(
+            "Transcribe a media file locally with the selected speech model."
+        )
+        media_description.setObjectName("muted")
+        media_description.setWordWrap(True)
+        media_text.addWidget(media_title)
+        media_text.addWidget(media_description)
+        self.transcribe_file_button = QPushButton("Transcribe file…")
+        self.transcribe_file_button.setObjectName("primaryButton")
+        self.transcribe_file_button.clicked.connect(self.choose_media_file)
+        media_layout.addLayout(media_text, 1)
+        media_layout.addWidget(self.transcribe_file_button)
+        layout.addWidget(media_row)
+
+        output_header = QHBoxLayout()
+        output_title = QLabel("Transcript and activity")
+        output_title.setObjectName("modelTitle")
+        copy_output = QPushButton("Copy all")
+        copy_output.clicked.connect(self.copy_output)
+        save_output = QPushButton("Save…")
+        save_output.clicked.connect(self.save_output)
+        clear_output = QPushButton("Clear")
+        clear_output.clicked.connect(self.clear_output)
+        output_header.addWidget(output_title)
+        output_header.addStretch()
+        output_header.addWidget(copy_output)
+        output_header.addWidget(save_output)
+        output_header.addWidget(clear_output)
+        layout.addLayout(output_header)
+
+        self.activity_label = QPlainTextEdit()
         self.activity_label.setObjectName("activity")
-        self.activity_label.setWordWrap(True)
-        layout.addWidget(self.activity_label)
-        layout.addStretch()
-        return page
+        self.activity_label.setReadOnly(True)
+        self.activity_label.setFocusPolicy(Qt.ClickFocus)
+        self.activity_label.setPlaceholderText(
+            "Transcriptions and activity messages will appear here."
+        )
+        self.activity_label.setMinimumHeight(120)
+        self.activity_label.setPlainText("Ready")
+        layout.addWidget(self.activity_label, 1)
+        return self._scrollable_page(page, "homeScroll")
 
     def _build_models_tab(self) -> QWidget:
         page = QWidget()
@@ -578,10 +623,81 @@ class SherpaWindow(QMainWindow):
 
     def copy_shortcut(self, command: str) -> None:
         QApplication.clipboard().setText(command)
-        self.activity_label.setText(f"Copied shortcut command: {command}")
+        self.activity_label.setPlainText(f"Copied shortcut command: {command}")
         self.tray.showMessage(
             "Sherpa", "Shortcut command copied", QSystemTrayIcon.Information, 2000
         )
+
+    def choose_media_file(self) -> None:
+        if self.dictation_active:
+            QMessageBox.information(
+                self,
+                "Stop dictation first",
+                "Stop microphone dictation before transcribing a saved file.",
+            )
+            return
+        filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Choose audio or video to transcribe",
+            "",
+            (
+                "Audio and video (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.opus "
+                "*.wma *.mp4 *.mkv *.mov *.webm *.avi *.mpeg *.mpg);;"
+                "Audio (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.opus *.wma);;"
+                "Video (*.mp4 *.mkv *.mov *.webm *.avi *.mpeg *.mpg);;All files (*)"
+            ),
+        )
+        if not filename:
+            return
+        self.media_transcription_active = True
+        self.transcribe_file_button.setEnabled(False)
+        self.transcribe_file_button.setText("Transcribing…")
+        self.activity_label.setPlainText(
+            f"Transcribing {Path(filename).name} locally. This can take a while…"
+        )
+        self.run_service(
+            "dictate",
+            ["transcribe", filename],
+            self._media_transcription_finished,
+            quiet=True,
+        )
+
+    def _media_transcription_finished(self, output: str) -> None:
+        self.media_transcription_active = False
+        self.transcribe_file_button.setText("Transcribe file…")
+        self.transcribe_file_button.setEnabled(not self.dictation_active)
+        result = output or "No speech was recognized in this file."
+        self.activity_label.setPlainText(result)
+        self.activity_label.moveCursor(QTextCursor.Start)
+        if output.startswith("Error:"):
+            self.tray.showMessage(
+                "Could not transcribe file", output, QSystemTrayIcon.Warning, 5000
+            )
+
+    def copy_output(self) -> None:
+        text = self.activity_label.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def save_output(self) -> None:
+        text = self.activity_label.toPlainText()
+        if not text:
+            return
+        filename, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save transcript",
+            "transcript.txt",
+            "Text files (*.txt);;All files (*)",
+        )
+        if not filename:
+            return
+        try:
+            Path(filename).write_text(text + ("" if text.endswith("\n") else "\n"), encoding="utf-8")
+        except OSError as error:
+            QMessageBox.critical(self, "Could not save transcript", str(error))
+
+    def clear_output(self) -> None:
+        self.activity_label.clear()
 
     @staticmethod
     def _toggle_field(toggle: ToggleSwitch, text: str) -> QWidget:
@@ -656,7 +772,7 @@ class SherpaWindow(QMainWindow):
             #serviceCard, #modelRow { background: #ffffff; border: 1px solid #dde5df; border-radius: 12px; }
             #statusDot { color: #a7b0ab; }
             #statusDot[active="true"] { color: #18a466; }
-            #activity { padding: 12px 14px; color: #536159; background: #e9eeeb; border-radius: 8px; }
+            #activity { padding: 10px 12px; color: #33473c; background: #ffffff; border: 1px solid #d3ddd6; border-radius: 8px; selection-color: #102219; selection-background-color: #cde7d7; }
             QPushButton { background: #ffffff; border: 1px solid #cbd5ce; border-radius: 8px; padding: 8px 14px; min-height: 20px; }
             QPushButton:hover { background: #edf3ef; border-color: #9eafa4; }
             QPushButton:disabled { color: #9ca59f; background: #f0f2f1; }
@@ -696,7 +812,7 @@ class SherpaWindow(QMainWindow):
         process = QProcess(self)
         self.processes.add(process)
         if not quiet:
-            self.activity_label.setText(f"Working: {service} {' '.join(arguments)}…")
+            self.activity_label.setPlainText(f"Working: {service} {' '.join(arguments)}…")
 
         def finished(exit_code: int, _status: QProcess.ExitStatus) -> None:
             stdout = bytes(process.readAllStandardOutput()).decode(errors="replace").strip()
@@ -707,7 +823,7 @@ class SherpaWindow(QMainWindow):
             if completed:
                 completed(message)
             elif not quiet:
-                self.activity_label.setText(message or ("Done" if exit_code == 0 else "Failed"))
+                self.activity_label.setPlainText(message or ("Done" if exit_code == 0 else "Failed"))
                 if exit_code != 0 and message:
                     self.tray.showMessage("Sherpa", message, QSystemTrayIcon.Warning, 5000)
             if not quiet:
@@ -754,6 +870,8 @@ class SherpaWindow(QMainWindow):
             else:
                 detail = "Not running"
             self.dictation_card.set_state(self.dictation_active, detail)
+            if not self.media_transcription_active:
+                self.transcribe_file_button.setEnabled(not self.dictation_active)
             self.tray_start_dictation.setEnabled(
                 not self.dictation_active and not restarting
             )
@@ -862,7 +980,7 @@ class SherpaWindow(QMainWindow):
         name = MODEL_BY_ID[model_id].name
         self.download_thread = None
         self.download_progress.setVisible(False)
-        self.activity_label.setText(f"Installed {name} in {path}")
+        self.activity_label.setPlainText(f"Installed {name} in {path}")
         self.tray.showMessage("Model installed", name, QSystemTrayIcon.Information, 4000)
         self.refresh_model_rows()
 
@@ -885,7 +1003,7 @@ class SherpaWindow(QMainWindow):
         )
 
     def _model_selected(self, model_id: str, output: str) -> None:
-        self.activity_label.setText(output or f"Selected {MODEL_BY_ID[model_id].name}")
+        self.activity_label.setPlainText(output or f"Selected {MODEL_BY_ID[model_id].name}")
         self.refresh_model_rows()
 
     def save_user_settings(self) -> None:
@@ -936,11 +1054,11 @@ class SherpaWindow(QMainWindow):
                 detail += "; recognizer restart queued until dictation stops"
             else:
                 detail += "; restarting recognizer"
-        self.activity_label.setText(f"Settings saved. {detail}")
+        self.activity_label.setPlainText(f"Settings saved. {detail}")
 
     def _tts_settings_reloaded(self, output: str) -> None:
         if output:
-            self.activity_label.setText(f"Settings saved. {output}")
+            self.activity_label.setPlainText(f"Settings saved. {output}")
 
     def _queue_or_restart_service(self, service: str) -> None:
         active = self.dictation_active if service == "dictate" else self.reader_active
@@ -968,11 +1086,11 @@ class SherpaWindow(QMainWindow):
         self.service_restarts_in_progress.discard(service)
         if "stop dictation before restarting" in output.casefold():
             self.pending_service_restarts.add(service)
-            self.activity_label.setText(
+            self.activity_label.setPlainText(
                 "Settings saved. Restart will run after dictation stops."
             )
         else:
-            self.activity_label.setText(output or f"{service.title()} service restarted")
+            self.activity_label.setPlainText(output or f"{service.title()} service restarted")
         self.refresh_status()
 
     def reset_user_settings(self) -> None:
@@ -1030,7 +1148,7 @@ class SherpaWindow(QMainWindow):
                 if self.dictation_active
                 else "; restarting recognizer"
             )
-        self.activity_label.setText(
+        self.activity_label.setPlainText(
             f"Settings reset to defaults. Downloaded models were kept. {detail}"
         )
 

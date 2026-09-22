@@ -12,7 +12,7 @@ distributions, download the latest `.deb` from the
 then install it with:
 
 ```bash
-sudo apt install ./sherpa_0.1.3_amd64.deb
+sudo apt install ./sherpa_0.2.0_amd64.deb
 ```
 
 Open **Sherpa** from the application menu. Speech models are not bundled; the
@@ -36,6 +36,8 @@ The app includes:
 
 - a system-tray menu for starting/stopping dictation and selected-text reading
 - live status for both background services
+- a scrollable, selectable transcript/activity panel with copy, save, and clear controls
+- local transcription of common saved audio and video formats
 - a model manager with verified official Sherpa-ONNX downloads
 - a configurable model storage location
 - controls for pause detection, microphone threshold, text insertion, voice,
@@ -100,7 +102,7 @@ and provides a Copy button for each fallback command.
 ```bash
 ./.venv/bin/pip install -r requirements-dev.txt
 ./build-release.sh
-./build-deb.sh 0.1.3
+./build-deb.sh 0.2.0
 ```
 
 This produces a self-contained application directory and a Debian package in
@@ -126,8 +128,15 @@ project.
 ./dictate status
 ./dictate reload-settings # apply runtime settings without unloading the model
 ./dictate quit         # unload the model and stop the background daemon
-./dictate transcribe /path/to/16-bit-pcm.wav
+./dictate transcribe /path/to/audio-or-video.mp4
 ```
+
+The Home page can transcribe saved WAV, MP3, M4A, AAC, FLAC, OGG, Opus, WMA,
+MP4, MKV, MOV, WebM, AVI, MPEG, and other formats supported by `ffmpeg`. Audio
+is decoded locally and sent through the currently selected speech model; it is
+never uploaded. Stop microphone dictation before starting a file transcription.
+The Debian package installs `ffmpeg` automatically. Source installations need
+it available on `PATH` for formats other than 16-bit PCM WAV.
 
 The first command starts a local background daemon automatically. The daemon
 keeps the model loaded, so later dictations start quickly. Logs are written to

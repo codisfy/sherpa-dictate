@@ -2,7 +2,7 @@
 set -eu
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-version=${1:-0.1.3}
+version=${1:-0.2.0}
 architecture=$(dpkg --print-architecture)
 bundle="$project_dir/dist/sherpa"
 package_root="$project_dir/build/deb-root"
@@ -42,7 +42,7 @@ Version: $version
 Section: sound
 Priority: optional
 Architecture: $architecture
-Depends: libportaudio2
+Depends: libportaudio2, ffmpeg
 Recommends: ydotool, wl-clipboard | xclip
 Maintainer: Sherpa contributors
 Description: Private local dictation and text-to-speech app

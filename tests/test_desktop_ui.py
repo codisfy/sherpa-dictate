@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QScrollArea
 
 from sherpa_app.main import SherpaWindow
 
@@ -60,10 +60,13 @@ class DesktopStatusTests(unittest.TestCase):
         window.show()
         self.app.processEvents()
 
+        home = window.findChild(QScrollArea, "homeScroll")
         shortcuts = window.findChild(QScrollArea, "shortcutsScroll")
         settings = window.findChild(QScrollArea, "settingsScroll")
+        self.assertIsNotNone(home)
         self.assertIsNotNone(shortcuts)
         self.assertIsNotNone(settings)
+        self.assertGreater(home.verticalScrollBar().maximum(), 0)
         self.assertGreater(shortcuts.verticalScrollBar().maximum(), 0)
         self.assertGreater(settings.verticalScrollBar().maximum(), 0)
 
@@ -100,6 +103,48 @@ class DesktopStatusTests(unittest.TestCase):
         QTest.mouseClick(toggle, Qt.LeftButton, pos=QPoint(42, 13))
         self.assertFalse(toggle.isChecked())
 
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_home_output_is_selectable_scrollable_and_copyable(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+        self.assertIsInstance(window.activity_label, QPlainTextEdit)
+        self.assertTrue(window.activity_label.isReadOnly())
+
+        window.activity_label.setPlainText("A useful transcript")
+        window.copy_output()
+        self.assertEqual(QApplication.clipboard().text(), "A useful transcript")
+        window.clear_output()
+        self.assertEqual(window.activity_label.toPlainText(), "")
+
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_saved_media_uses_dictation_transcription_service(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+
+        with (
+            patch(
+                "sherpa_app.main.QFileDialog.getOpenFileName",
+                return_value=("/tmp/meeting.mp4", "Video"),
+            ),
+            patch.object(window, "run_service") as run_service,
+        ):
+            window.choose_media_file()
+
+        self.assertTrue(window.media_transcription_active)
+        self.assertFalse(window.transcribe_file_button.isEnabled())
+        self.assertEqual(
+            run_service.call_args.args[:2],
+            ("dictate", ["transcribe", "/tmp/meeting.mp4"]),
+        )
+        self.assertTrue(run_service.call_args.kwargs["quiet"])
+
+        window._media_transcription_finished("Meeting transcript")
+        self.assertEqual(window.activity_label.toPlainText(), "Meeting transcript")
+        self.assertTrue(window.transcribe_file_button.isEnabled())
         window.tray.hide()
         window.deleteLater()
 
