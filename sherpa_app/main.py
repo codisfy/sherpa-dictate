@@ -108,6 +108,26 @@ class ToggleSwitch(QCheckBox):
         painter.drawEllipse(QRectF(knob_x, 5, 16, 16))
 
 
+class StatusDot(QWidget):
+    """Paint a service indicator without relying on a font glyph."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._active = False
+        self.setFixedSize(10, 10)
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self.update()
+
+    def paintEvent(self, _event: Any) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#18a466") if self._active else QColor("#a7b0ab"))
+        painter.drawEllipse(QRectF(1, 1, 8, 8))
+
+
 class ServiceCard(QFrame):
     activated = Signal()
     stopped = Signal()
@@ -122,8 +142,7 @@ class ServiceCard(QFrame):
         heading = QHBoxLayout()
         title_label = QLabel(title)
         title_label.setObjectName("cardTitle")
-        self.status_dot = QLabel("●")
-        self.status_dot.setObjectName("statusDot")
+        self.status_dot = StatusDot()
         self.status_label = QLabel("Not running")
         self.status_label.setObjectName("muted")
         heading.addWidget(title_label)
@@ -150,9 +169,7 @@ class ServiceCard(QFrame):
         layout.addLayout(buttons)
 
     def set_state(self, active: bool, detail: str) -> None:
-        self.status_dot.setProperty("active", active)
-        self.status_dot.style().unpolish(self.status_dot)
-        self.status_dot.style().polish(self.status_dot)
+        self.status_dot.set_active(active)
         self.status_label.setText(detail)
         self.start_button.setEnabled(not active)
         self.stop_button.setEnabled(active)
@@ -770,8 +787,6 @@ class SherpaWindow(QMainWindow):
             #muted { color: #66736c; }
             #pathLabel { color: #536159; padding: 7px 10px; min-height: 22px; background: #e9eeeb; border-radius: 7px; }
             #serviceCard, #modelRow { background: #ffffff; border: 1px solid #dde5df; border-radius: 12px; }
-            #statusDot { color: #a7b0ab; }
-            #statusDot[active="true"] { color: #18a466; }
             #activity { padding: 10px 12px; color: #33473c; background: #ffffff; border: 1px solid #d3ddd6; border-radius: 8px; selection-color: #102219; selection-background-color: #cde7d7; }
             QPushButton { background: #ffffff; border: 1px solid #cbd5ce; border-radius: 8px; padding: 8px 14px; min-height: 20px; }
             QPushButton:hover { background: #edf3ef; border-color: #9eafa4; }

@@ -10,7 +10,7 @@ from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QScrollArea
 
-from sherpa_app.main import SherpaWindow
+from sherpa_app.main import SherpaWindow, StatusDot
 
 
 class DesktopStatusTests(unittest.TestCase):
@@ -35,6 +35,18 @@ class DesktopStatusTests(unittest.TestCase):
         self.assertFalse(window.dictation_card.start_button.isEnabled())
         self.assertTrue(window.dictation_card.stop_button.isEnabled())
         self.assertTrue(window.tray_stop_dictation.isEnabled())
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_service_status_uses_a_painted_dot_instead_of_a_font_glyph(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+
+        self.assertIsInstance(window.dictation_card.status_dot, StatusDot)
+        self.assertFalse(window.dictation_card.status_dot._active)
+        window.dictation_card.set_state(True, "Listening")
+        self.assertTrue(window.dictation_card.status_dot._active)
+
         window.tray.hide()
         window.deleteLater()
 
