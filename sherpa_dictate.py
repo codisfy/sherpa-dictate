@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sherpa_app.playback import TtsPlaybackMonitor
 from sherpa_app.settings import (
     load_settings,
     resolve_model_path,
@@ -248,6 +249,7 @@ class DictationEngine:
         self.mode = "idle"
         self.continuous_paste = True
         self.input_stream: sd.InputStream | None = None
+        self.playback_monitor: TtsPlaybackMonitor | None = None
         self.recognition_stream: Any = None
         self.audio_queue: queue.Queue[np.ndarray] | None = None
         self.phrase_queue: queue.Queue[Any] | None = None
@@ -295,6 +297,7 @@ class DictationEngine:
             self.speech_threshold = float(config.get("speech_threshold", 0.012))
             self.append_space = bool(config.get("append_space_after_phrase", True))
             self.spoken_punctuation = bool(config.get("spoken_punctuation", True))
+            self.ignore_tts_playback = bool(config.get("ignore_tts_playback", True))
             self.audio_buffer_seconds = audio_buffer_seconds
 
     def reload_runtime_settings(self) -> dict[str, Any]:
@@ -673,7 +676,20 @@ class DictationEngine:
         if self.audio_queue is None:
             return
 
+        with self.settings_lock:
+            ignore_tts_playback = self.ignore_tts_playback
+        muted = (
+            ignore_tts_playback
+            and self.playback_monitor is not None
+            and self.playback_monitor.active()
+        )
+        if muted and self.mode == "manual":
+            return
         samples = np.asarray(input_data[:, 0], dtype=np.float32).copy()
+        if muted:
+            # Silence still finishes a user's pending continuous phrase and
+            # keeps playback audio out of the segmenter's pre-roll buffer.
+            samples.fill(0)
         try:
             self.audio_queue.put_nowait(samples)
         except queue.Full:
@@ -753,6 +769,7 @@ class DictationEngine:
             worker.start()
 
         try:
+            self.playback_monitor = TtsPlaybackMonitor(RUNTIME_DIR)
             self.input_stream = sd.InputStream(
                 samplerate=self.input_sample_rate,
                 blocksize=int(self.input_sample_rate * block_seconds),
@@ -767,6 +784,9 @@ class DictationEngine:
             for worker in self.workers:
                 worker.join(timeout=5)
             self.input_stream = None
+            if self.playback_monitor is not None:
+                self.playback_monitor.close()
+                self.playback_monitor = None
             raise
 
         self.listening = True
@@ -802,6 +822,9 @@ class DictationEngine:
             self.input_stream.stop()
             self.input_stream.close()
             self.input_stream = None
+        if self.playback_monitor is not None:
+            self.playback_monitor.close()
+            self.playback_monitor = None
 
         self.stop_event.set()
         deadline = time.monotonic() + 120

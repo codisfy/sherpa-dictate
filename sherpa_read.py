@@ -20,6 +20,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from sherpa_app.playback import tts_playback
 from sherpa_app.settings import load_settings, resolve_model_path, user_data_dir
 
 
@@ -283,7 +284,7 @@ class TtsEngine:
 
         started = time.monotonic()
         try:
-            with sd.OutputStream(
+            with tts_playback(RUNTIME_DIR), sd.OutputStream(
                 samplerate=self.tts.sample_rate,
                 blocksize=1024,
                 device=output_device,

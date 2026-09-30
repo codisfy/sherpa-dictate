@@ -460,6 +460,10 @@ class SherpaWindow(QMainWindow):
         self.spoken_punctuation.setChecked(
             bool(dictation.get("spoken_punctuation", True))
         )
+        self.ignore_tts_playback = ToggleSwitch("Ignore microphone input while reading")
+        self.ignore_tts_playback.setChecked(
+            bool(dictation.get("ignore_tts_playback", True))
+        )
 
         form.addRow("Microphone", self.input_device)
         form.addRow("Audio output", self.output_device)
@@ -469,6 +473,13 @@ class SherpaWindow(QMainWindow):
         form.addRow("Microphone sensitivity threshold", self.speech_threshold)
         form.addRow("TTS voice", self.speaker_id)
         form.addRow("TTS speed", self.tts_speed)
+        form.addRow(
+            "Prevent TTS feedback",
+            self._toggle_field(
+                self.ignore_tts_playback,
+                "Pause microphone capture while Sherpa reads aloud",
+            ),
+        )
         form.addRow(
             "Spoken punctuation",
             self._toggle_field(self.spoken_punctuation, "Convert commands such as “new line”"),
@@ -480,7 +491,8 @@ class SherpaWindow(QMainWindow):
         layout.addLayout(form)
 
         note = QLabel(
-            "Audio remains on this device. Text insertion changes apply immediately. "
+            "Audio remains on this device. Text insertion and TTS feedback protection "
+            "changes apply immediately. "
             "Microphone and pause settings apply to the next dictation, and voice settings "
             "to the next reading. Settings that rebuild a model restart it automatically "
             "when idle, or after current work stops."
@@ -1032,6 +1044,7 @@ class SherpaWindow(QMainWindow):
             "silence_ms": self.silence_ms.value(),
             "speech_threshold": self.speech_threshold.value(),
             "spoken_punctuation": self.spoken_punctuation.isChecked(),
+            "ignore_tts_playback": self.ignore_tts_playback.isChecked(),
         }
         latest["tts"] = {
             **latest.get("tts", {}),
@@ -1133,6 +1146,7 @@ class SherpaWindow(QMainWindow):
         self.speaker_id.setValue(2)
         self.tts_speed.setValue(1.4)
         self.spoken_punctuation.setChecked(True)
+        self.ignore_tts_playback.setChecked(True)
         self.start_minimized.setChecked(False)
         self.storage_label.setText(str(defaults["model_storage_dir"]))
         self.refresh_model_rows()

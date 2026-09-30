@@ -306,6 +306,14 @@ The `[tts]` table configures the independent reader daemon:
 The app reloads voice, speed, and audio-output changes for the next reading
 without rebuilding the TTS model.
 
+Settings → **Prevent TTS feedback** is enabled by default. Microphone input is
+ignored while Sherpa reads aloud and for 300 ms afterward, then capture resumes
+automatically in both manual and continuous dictation. Your own speech during
+reading is also ignored. Disable the setting to dictate while listening through
+headphones. The equivalent shared `config.toml` option is
+`ignore_tts_playback = false`; run `./dictate reload-settings` after editing it.
+This protection applies to Sherpa's reader, not audio from other applications.
+
 The `[models.*]` tables define each model's backend, directory, and language
 settings. The app applies text-insertion changes to a running dictation service
 immediately and safely restarts an idle recognizer when model-construction

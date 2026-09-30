@@ -45,6 +45,10 @@ input_sample_rate = 48000
 # name. Restart the daemon after changing microphones.
 audio_device = ""
 
+# Ignore microphone input while Sherpa reads aloud, then resume automatically.
+# Set to false to keep dictating during playback (for example with headphones).
+ignore_tts_playback = true
+
 
 # ---------------------------------------------------------------------------
 # Text insertion
@@ -202,8 +206,8 @@ language = ""
 # Text-to-speech
 # ---------------------------------------------------------------------------
 #
-# The reader runs in a separate background daemon, so it can play through
-# headphones while dictation continues listening. Restart it after changing
+# The reader runs in a separate background daemon. Disable ignore_tts_playback
+# above to dictate while listening through headphones. Restart it after changing
 # these settings:
 #   ./read quit
 #

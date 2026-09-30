@@ -109,11 +109,13 @@ class ContinuousPipelineTests(unittest.TestCase):
             "input_sample_rate": 48000,
             "num_threads": 8,
             "output_method": "clipboard",
+            "ignore_tts_playback": False,
         }
         with patch("sherpa_dictate.load_config", return_value=config):
             result = engine.reload_runtime_settings()
 
         self.assertEqual(engine.output_method, "clipboard")
+        self.assertFalse(engine.ignore_tts_playback)
         self.assertEqual(result["state"], "listening")
         self.assertEqual(result["restart_required"], [])
 

@@ -11,6 +11,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QScrollArea
 
 from sherpa_app.main import SherpaWindow, StatusDot
+from sherpa_app.settings import default_settings
 
 
 class DesktopStatusTests(unittest.TestCase):
@@ -161,9 +162,12 @@ class DesktopStatusTests(unittest.TestCase):
         window.deleteLater()
 
     def test_saving_settings_reloads_running_dictation_runtime(self) -> None:
-        window = SherpaWindow(self.app)
+        with patch("sherpa_app.main.load_settings", return_value=default_settings()):
+            window = SherpaWindow(self.app)
         window.status_timer.stop()
         window._set_combo_data(window.output_method, "clipboard")
+        self.assertTrue(window.ignore_tts_playback.isChecked())
+        window.ignore_tts_playback.setChecked(False)
 
         with (
             patch("sherpa_app.main.save_settings") as save_settings,
@@ -174,6 +178,7 @@ class DesktopStatusTests(unittest.TestCase):
         save_settings.assert_called_once()
         saved = save_settings.call_args.args[0]
         self.assertEqual(saved["dictation"]["output_method"], "clipboard")
+        self.assertFalse(saved["dictation"]["ignore_tts_playback"])
         service_calls = [call.args[:2] for call in run_service.call_args_list]
         self.assertIn(("dictate", ["reload-settings"]), service_calls)
         self.assertIn(("read", ["reload-settings"]), service_calls)
