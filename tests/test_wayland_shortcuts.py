@@ -35,6 +35,7 @@ class WaylandShortcutTests(unittest.TestCase):
                 "dictation-stop",
                 "dictation-manual-toggle",
                 "read-selection",
+                "tts-pause-toggle",
                 "tts-stop",
             },
         )

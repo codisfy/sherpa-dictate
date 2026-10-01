@@ -131,8 +131,11 @@ class StatusDot(QWidget):
 class ServiceCard(QFrame):
     activated = Signal()
     stopped = Signal()
+    pause_toggled = Signal()
 
-    def __init__(self, title: str, description: str, start_label: str) -> None:
+    def __init__(
+        self, title: str, description: str, start_label: str, pausable: bool = False
+    ) -> None:
         super().__init__()
         self.setObjectName("serviceCard")
         layout = QVBoxLayout(self)
@@ -164,6 +167,12 @@ class ServiceCard(QFrame):
         self.start_button.clicked.connect(self.activated.emit)
         self.stop_button.clicked.connect(self.stopped.emit)
         buttons.addWidget(self.start_button)
+        self.pause_button: QPushButton | None = None
+        if pausable:
+            self.pause_button = QPushButton("Pause")
+            self.pause_button.setEnabled(False)
+            self.pause_button.clicked.connect(self.pause_toggled.emit)
+            buttons.addWidget(self.pause_button)
         buttons.addWidget(self.stop_button)
         buttons.addStretch()
         layout.addLayout(buttons)
@@ -173,6 +182,8 @@ class ServiceCard(QFrame):
         self.status_label.setText(detail)
         self.start_button.setEnabled(not active)
         self.stop_button.setEnabled(active)
+        if self.pause_button is not None:
+            self.pause_button.setEnabled(active)
 
 
 class SherpaWindow(QMainWindow):
@@ -188,6 +199,7 @@ class SherpaWindow(QMainWindow):
         self.model_rows: dict[str, dict[str, Any]] = {}
         self.dictation_active = False
         self.reader_active = False
+        self.reader_paused = False
         self.media_transcription_active = False
         self._close_notice_shown = False
         self._quitting = False
@@ -260,6 +272,7 @@ class SherpaWindow(QMainWindow):
             "Text to speech",
             "Reads the text currently selected in another application.",
             "Read selection",
+            pausable=True,
         )
         self.dictation_card.activated.connect(
             lambda: self.run_service("dictate", ["continuous"])
@@ -272,6 +285,9 @@ class SherpaWindow(QMainWindow):
         )
         self.reader_card.stopped.connect(
             lambda: self.run_service("read", ["stop"])
+        )
+        self.reader_card.pause_toggled.connect(
+            lambda: self.run_service("read", ["toggle-pause"])
         )
         cards.addWidget(self.dictation_card, 0, 0)
         cards.addWidget(self.reader_card, 0, 1)
@@ -567,6 +583,7 @@ class SherpaWindow(QMainWindow):
             ("Stop dictation", "dictation-stop"),
             ("Toggle manual dictation", "dictation-manual-toggle"),
             ("Read selected text", "read-selection"),
+            ("Pause or resume reading", "tts-pause-toggle"),
             ("Stop text to speech", "tts-stop"),
         )
         for title, action in actions:
@@ -633,6 +650,7 @@ class SherpaWindow(QMainWindow):
             "dictation-stop": ("dictate", ["stop"]),
             "dictation-manual-toggle": ("dictate", ["toggle"]),
             "read-selection": ("read", ["selection"]),
+            "tts-pause-toggle": ("read", ["toggle-pause"]),
             "tts-stop": ("read", ["stop"]),
         }
         command = commands.get(action)
@@ -754,6 +772,8 @@ class SherpaWindow(QMainWindow):
         self.tray_start_dictation = QAction("Start dictation", self)
         self.tray_stop_dictation = QAction("Stop dictation", self)
         self.tray_read = QAction("Read selected text", self)
+        self.tray_pause_reading = QAction("Pause reading", self)
+        self.tray_pause_reading.setEnabled(False)
         self.tray_stop_reading = QAction("Stop reading", self)
         show_action = QAction("Open Sherpa", self)
         quit_action = QAction("Quit Sherpa", self)
@@ -765,6 +785,9 @@ class SherpaWindow(QMainWindow):
             lambda: self.run_service("dictate", ["stop"])
         )
         self.tray_read.triggered.connect(lambda: self.run_service("read", ["selection"]))
+        self.tray_pause_reading.triggered.connect(
+            lambda: self.run_service("read", ["toggle-pause"])
+        )
         self.tray_stop_reading.triggered.connect(
             lambda: self.run_service("read", ["stop"])
         )
@@ -775,6 +798,7 @@ class SherpaWindow(QMainWindow):
         menu.addAction(self.tray_stop_dictation)
         menu.addSeparator()
         menu.addAction(self.tray_read)
+        menu.addAction(self.tray_pause_reading)
         menu.addAction(self.tray_stop_reading)
         menu.addSeparator()
         menu.addAction(show_action)
@@ -909,17 +933,30 @@ class SherpaWindow(QMainWindow):
                 self.dictation_card.start_button.setEnabled(False)
                 self.dictation_card.stop_button.setEnabled(False)
         else:
-            self.reader_active = status.get("state") in {"speaking", "stopping"}
-            detail = "Reading" if self.reader_active else "Not running"
+            reader_state = status.get("state")
+            self.reader_active = reader_state in {"speaking", "paused", "stopping"}
+            self.reader_paused = reader_state == "paused"
+            detail = {
+                "speaking": "Reading",
+                "paused": "Paused",
+                "stopping": "Stopping",
+            }.get(reader_state, "Not running")
             self.reader_card.set_state(self.reader_active, detail)
+            pause_enabled = reader_state in {"speaking", "paused"}
+            self.reader_card.pause_button.setText("Resume" if self.reader_paused else "Pause")
+            self.reader_card.pause_button.setEnabled(pause_enabled)
             self.tray_read.setEnabled(not self.reader_active)
+            self.tray_pause_reading.setText(
+                "Resume reading" if self.reader_paused else "Pause reading"
+            )
+            self.tray_pause_reading.setEnabled(pause_enabled)
             self.tray_stop_reading.setEnabled(self.reader_active)
 
         states = []
         if self.dictation_active:
             states.append("dictating")
         if self.reader_active:
-            states.append("reading")
+            states.append("reading paused" if self.reader_paused else "reading")
         self.tray.setToolTip("Sherpa · " + (" and ".join(states).title() if states else "Ready"))
         if (
             service in self.pending_service_restarts

@@ -12,7 +12,7 @@ distributions, download the latest `.deb` from the
 then install it with:
 
 ```bash
-sudo apt install ./sherpa_0.2.2_amd64.deb
+sudo apt install ./sherpa_0.2.3_amd64.deb
 ```
 
 Open **Sherpa** from the application menu. Speech models are not bundled; the
@@ -77,7 +77,8 @@ When running from a source checkout, run `./install-desktop.sh` first so the
 portal can associate shortcut permissions with Sherpa instead of the terminal.
 
 Suggested defaults are `Ctrl+Alt+D` for continuous dictation,
-`Ctrl+Alt+M` for manual dictation, and `Ctrl+Alt+R` for reading selected text.
+`Ctrl+Alt+M` for manual dictation, `Ctrl+Alt+R` for reading selected text,
+and `Ctrl+Alt+P` for pausing/resuming the current reading.
 The desktop dialog has the final say and can replace or leave any binding
 unassigned.
 
@@ -91,6 +92,7 @@ sherpa action dictation-start
 sherpa action dictation-stop
 sherpa action dictation-manual-toggle
 sherpa action read-selection
+sherpa action tts-pause-toggle
 sherpa action tts-stop
 ```
 
@@ -102,7 +104,7 @@ and provides a Copy button for each fallback command.
 ```bash
 ./.venv/bin/pip install -r requirements-dev.txt
 ./build-release.sh
-./build-deb.sh 0.2.2
+./build-deb.sh 0.2.3
 ```
 
 This produces a self-contained application directory and a Debian package in
@@ -179,9 +181,16 @@ microphone dictation:
 ./read speak "Text to read"  # read text supplied on the command line
 printf '%s' "Text" | ./read speak
 ./read stop
+./read toggle-pause          # pause; call again to resume from the same position
 ./read status
 ./read quit                  # unload the TTS model
 ```
+
+Use **Pause/Resume** on the Home tab or in the system tray, or assign a shortcut
+to `sherpa action tts-pause-toggle`. The same shortcut pauses and resumes without
+recapturing the selection or restarting the text. Stop discards the reading.
+Dictation resumes while reading is paused, once buffered sound and its brief
+acoustic tail finish; TTS feedback protection returns before playback resumes.
 
 The selection command first tries the Wayland/X11 primary selection. If an
 application does not expose it, the command waits for the shortcut keys to be

@@ -111,12 +111,16 @@ class TtsFeedbackTests(unittest.TestCase):
                 engine.worker = threading.current_thread()
                 engine.state = "speaking"
                 engine.stop_event = stop_event
+                engine.pause_event = threading.Event()
+                engine.playback_activity = None
+                engine.output_latency = 0.0
                 engine.last_error = ""
                 monitor = self.monitor
 
                 class OutputStream:
                     def __init__(self, **kwargs):
                         self.finished = kwargs["finished_callback"]
+                        self.latency = 0.0
 
                     def __enter__(self):
                         self_active = monitor.active()
@@ -196,6 +200,19 @@ class TtsFeedbackTests(unittest.TestCase):
                     raise RuntimeError("output failed")
             sleep.assert_called_once()
         self.assertFalse(self.monitor.active())
+
+    def test_dictation_resumes_during_pause_and_is_protected_before_resume(self) -> None:
+        engine = self.make_engine("manual")
+        with tts_playback(self.runtime_dir) as activity:
+            self.capture(engine, 9)
+            activity.pause(output_latency=0.05)
+            self.capture(engine, 1)
+            activity.resume()
+            self.capture(engine, 8)
+        self.capture(engine, 2)
+        self.assertEqual(engine.audio_queue.get_nowait().tolist(), [1])
+        self.assertEqual(engine.audio_queue.get_nowait().tolist(), [2])
+        self.assertTrue(engine.audio_queue.empty())
 
 
 if __name__ == "__main__":

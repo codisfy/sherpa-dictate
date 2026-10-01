@@ -13,6 +13,7 @@ ACTION_COMMANDS = {
     "dictation-stop": ("dictate", ["stop"]),
     "dictation-manual-toggle": ("dictate", ["toggle"]),
     "read-selection": ("read", ["selection"]),
+    "tts-pause-toggle": ("read", ["toggle-pause"]),
     "tts-stop": ("read", ["stop"]),
 }
 
@@ -43,6 +44,7 @@ Actions:
   dictation-stop                 Stop dictation
   dictation-manual-toggle        Toggle record-then-transcribe mode
   read-selection                 Read the selected text
+  tts-pause-toggle               Pause or resume text to speech
   tts-stop                       Stop text to speech
 """
     )

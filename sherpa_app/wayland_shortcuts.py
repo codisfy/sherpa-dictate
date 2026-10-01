@@ -49,6 +49,7 @@ SHORTCUT_DEFINITIONS = (
         "dictation-manual-toggle", "Toggle manual dictation", "CTRL+ALT+m"
     ),
     ShortcutDefinition("read-selection", "Read selected text", "CTRL+ALT+r"),
+    ShortcutDefinition("tts-pause-toggle", "Pause or resume text to speech", "CTRL+ALT+p"),
     ShortcutDefinition("tts-stop", "Stop text to speech"),
 )
 

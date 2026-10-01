@@ -20,7 +20,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from sherpa_app.playback import tts_playback
+from sherpa_app.playback import TtsPlaybackActivity, tts_playback
 from sherpa_app.settings import load_settings, resolve_model_path, user_data_dir
 
 
@@ -189,6 +189,9 @@ class TtsEngine:
         self.lock = threading.Lock()
         self.worker: threading.Thread | None = None
         self.stop_event: threading.Event | None = None
+        self.pause_event = threading.Event()
+        self.playback_activity: TtsPlaybackActivity | None = None
+        self.output_latency = 0.0
         self.state = "idle"
         self.last_error = ""
 
@@ -228,6 +231,7 @@ class TtsEngine:
             output_device = self.output_device
             speaker_id = self.speaker_id
             speed = self.speed
+            pause_event = self.pause_event
         audio_queue: queue.Queue[np.ndarray] = queue.Queue(
             maxsize=audio_queue_chunks
         )
@@ -260,6 +264,8 @@ class TtsEngine:
                 raise sd.CallbackAbort
 
             output.fill(0)
+            if pause_event.is_set():
+                return
             written = 0
             while written < frames:
                 if current_chunk is None:
@@ -284,24 +290,31 @@ class TtsEngine:
 
         started = time.monotonic()
         try:
-            with tts_playback(RUNTIME_DIR), sd.OutputStream(
-                samplerate=self.tts.sample_rate,
-                blocksize=1024,
-                device=output_device,
-                channels=1,
-                dtype="float32",
-                callback=playback_callback,
-                finished_callback=playback_done.set,
-            ):
-                audio = self.tts.generate(
-                    text,
-                    sid=speaker_id,
-                    speed=speed,
-                    callback=generation_callback,
-                )
-                generation_done.set()
-                if not stop_event.is_set():
-                    playback_done.wait()
+            with tts_playback(RUNTIME_DIR) as activity:
+                with self.lock:
+                    self.playback_activity = activity
+                    if pause_event.is_set():
+                        activity.pause()
+                with sd.OutputStream(
+                    samplerate=self.tts.sample_rate,
+                    blocksize=1024,
+                    device=output_device,
+                    channels=1,
+                    dtype="float32",
+                    callback=playback_callback,
+                    finished_callback=playback_done.set,
+                ) as output_stream:
+                    with self.lock:
+                        self.output_latency = float(output_stream.latency)
+                    audio = self.tts.generate(
+                        text,
+                        sid=speaker_id,
+                        speed=speed,
+                        callback=generation_callback,
+                    )
+                    generation_done.set()
+                    if not stop_event.is_set():
+                        playback_done.wait()
 
             if not stop_event.is_set() and len(audio.samples) == 0:
                 raise RuntimeError("KittenTTS generated no audio")
@@ -326,6 +339,9 @@ class TtsEngine:
                     self.state = "idle"
                     self.worker = None
                     self.stop_event = None
+                    self.pause_event.clear()
+                    self.playback_activity = None
+                    self.output_latency = 0.0
 
     def speak(self, text: str) -> dict[str, Any]:
         text = text.strip()
@@ -350,6 +366,7 @@ class TtsEngine:
                 daemon=True,
             )
             self.stop_event = stop_event
+            self.pause_event.clear()
             self.worker = worker
             self.state = "speaking"
             self.last_error = ""
@@ -373,6 +390,30 @@ class TtsEngine:
             stop_event.set()
             self.state = "stopping"
         return {"ok": True, "state": "stopping", "message": "Reading stopped"}
+
+    def toggle_pause(self) -> dict[str, Any]:
+        with self.lock:
+            if self.worker is None or not self.worker.is_alive():
+                self.state = "idle"
+                return {"ok": True, "state": "idle", "message": "Not reading"}
+            if self.stop_event is not None and self.stop_event.is_set():
+                return {"ok": True, "state": "stopping", "message": "Reading is stopping"}
+            if self.pause_event.is_set():
+                # Protect microphone capture before the next audible callback.
+                if self.playback_activity is not None:
+                    self.playback_activity.resume()
+                self.pause_event.clear()
+                self.state = "speaking"
+                message = "Reading resumed"
+            else:
+                # Keep the stream running with silence without advancing its
+                # chunk offset. Synthesis can only fill the bounded queue.
+                self.pause_event.set()
+                self.state = "paused"
+                if self.playback_activity is not None:
+                    self.playback_activity.pause(self.output_latency)
+                message = "Reading paused"
+            return {"ok": True, "state": self.state, "message": message}
 
     def reload_runtime_settings(self) -> dict[str, Any]:
         config = load_tts_config()
@@ -457,6 +498,8 @@ def handle_request(engine: TtsEngine, request: dict[str, Any]) -> tuple[dict[str
         return engine.speak(str(request.get("text", ""))), False
     if action == "stop":
         return engine.stop(), False
+    if action == "toggle-pause":
+        return engine.toggle_pause(), False
     if action == "status":
         return engine.status(), False
     if action == "reload-settings":
@@ -619,7 +662,7 @@ def report_response(response: dict[str, Any], command: str) -> int:
 
 def restart_client() -> int:
     status = current_status()
-    if status and status.get("state") in {"speaking", "stopping"}:
+    if status and status.get("state") in {"speaking", "paused", "stopping"}:
         print("Error: stop text-to-speech before restarting its background service", file=sys.stderr)
         return 1
     if status is not None:
@@ -675,12 +718,14 @@ def client_main(arguments: argparse.Namespace) -> int:
             print(f"Error: {error}", file=sys.stderr)
             return 1
 
-    if arguments.command == "stop":
+    if arguments.command in {"stop", "toggle-pause"}:
         if not SOCKET_PATH.exists():
             print("Reader daemon is not running")
             return 0
         try:
-            return report_response(request_daemon({"action": "stop"}), "stop")
+            return report_response(
+                request_daemon({"action": arguments.command}), arguments.command
+            )
         except BaseException as error:
             notify("Reading error", str(error))
             print(f"Error: {error}", file=sys.stderr)
@@ -688,7 +733,7 @@ def client_main(arguments: argparse.Namespace) -> int:
 
     if arguments.command == "selection":
         status = current_status()
-        if status and status.get("state") in {"speaking", "stopping"}:
+        if status and status.get("state") in {"speaking", "paused", "stopping"}:
             return report_response(request_daemon({"action": "stop"}), "stop")
         text = get_selected_text()
     else:
@@ -715,6 +760,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers.add_parser("selection", help="Toggle reading of the desktop selection")
     speak = subparsers.add_parser("speak", help="Read an argument, or stdin when omitted")
     speak.add_argument("text", nargs="?")
+    subparsers.add_parser(
+        "toggle-pause", help="Pause or resume the current reading without losing its position"
+    )
     for command in (
         "stop",
         "status",

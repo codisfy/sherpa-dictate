@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,22 +19,57 @@ def _open_activity_file(runtime_dir: Path) -> int:
     return os.open(runtime_dir / "sherpa-tts-playback.lock", os.O_CREAT | os.O_RDWR, 0o600)
 
 
-@contextmanager
-def tts_playback(runtime_dir: Path) -> Iterator[None]:
-    """Hold activity until output closes and its brief acoustic tail fades.
+class TtsPlaybackActivity:
+    """Hold playback activity while sound is audible, with support for pauses."""
 
-    The OS releases the lock if the reader exits unexpectedly, so dictation
-    cannot remain muted by a stale activity flag.
-    """
-    descriptor = _open_activity_file(runtime_dir)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    def __init__(self, runtime_dir: Path) -> None:
+        self.descriptor = _open_activity_file(runtime_dir)
+        self.lock = threading.Lock()
+        self._active = False
+        self._closed = False
         try:
-            yield
-        finally:
-            time.sleep(PLAYBACK_TAIL_SECONDS)
+            self.resume()
+        except BaseException:
+            os.close(self.descriptor)
+            raise
+
+    def resume(self) -> None:
+        with self.lock:
+            if not self._closed and not self._active:
+                fcntl.flock(self.descriptor, fcntl.LOCK_EX)
+                self._active = True
+
+    def pause(self, output_latency: float = 0.0) -> None:
+        with self.lock:
+            if not self._closed and self._active:
+                # The stream now emits silence. Let already scheduled audio
+                # and its acoustic tail finish before allowing dictation.
+                time.sleep(max(0.0, output_latency) + PLAYBACK_TAIL_SECONDS)
+                fcntl.flock(self.descriptor, fcntl.LOCK_UN)
+                self._active = False
+
+    def close(self) -> None:
+        with self.lock:
+            if self._closed:
+                return
+            if self._active:
+                time.sleep(PLAYBACK_TAIL_SECONDS)
+            os.close(self.descriptor)
+            self._closed = True
+            self._active = False
+
+
+@contextmanager
+def tts_playback(runtime_dir: Path) -> Iterator[TtsPlaybackActivity]:
+    """Release activity after output closes, including errors or reader exits.
+
+    The OS releases the lock on a crash, preventing a stale muted state.
+    """
+    activity = TtsPlaybackActivity(runtime_dir)
+    try:
+        yield activity
     finally:
-        os.close(descriptor)
+        activity.close()
 
 
 class TtsPlaybackMonitor:
