@@ -2,7 +2,8 @@ import queue
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -20,6 +21,8 @@ class ContinuousPipelineTests(unittest.TestCase):
         engine.min_speech_seconds = 0.1
         engine.max_phrase_seconds = 10
         engine.speech_threshold = 0.5
+        engine.speech_detector = Mock()
+        engine.speech_detector.is_speech.return_value = True
         engine.audio_queue = queue.Queue()
         engine.phrase_queue = queue.Queue()
         engine.output_queue = queue.Queue()
@@ -34,6 +37,47 @@ class ContinuousPipelineTests(unittest.TestCase):
         engine.worker_result = ""
         engine.worker_error = None
         return engine
+
+    def test_loud_non_speech_finishes_a_phrase_before_stop(self) -> None:
+        engine = self.make_engine()
+        # Every chunk exceeds the volume threshold. Only the first is speech.
+        engine.speech_detector.is_speech.side_effect = [True, False, False, False]
+        for _ in range(4):
+            engine.audio_queue.put(np.ones(1, dtype=np.float32))
+        engine.stop_event.set()
+        with patch.object(sherpa_dictate, "np", np, create=True):
+            engine._continuous_segment_worker()
+
+        phrase = engine.phrase_queue.get_nowait()
+        self.assertEqual(phrase.sample_count, 3)
+        self.assertEqual(phrase.voiced_sample_count, 1)
+        self.assertEqual(engine.speech_detector.is_speech.call_count, 4)
+        self.assertIs(engine.phrase_queue.get_nowait(), sherpa_dictate._QUEUE_END)
+        self.assertIsNone(engine.worker_error)
+
+    def test_noise_only_never_reaches_transcription(self) -> None:
+        engine = self.make_engine()
+        engine.speech_detector.is_speech.return_value = False
+        for _ in range(20):
+            engine.audio_queue.put(np.ones(1, dtype=np.float32))
+        engine.stop_event.set()
+        with patch.object(sherpa_dictate, "np", np, create=True):
+            engine._continuous_segment_worker()
+
+        self.assertIs(engine.phrase_queue.get_nowait(), sherpa_dictate._QUEUE_END)
+        self.assertIsNone(engine.worker_error)
+
+    def test_volume_gate_is_preserved_and_does_not_skip_detector_updates(self) -> None:
+        engine = self.make_engine()
+        for _ in range(4):
+            engine.audio_queue.put(np.full(1, 0.1, dtype=np.float32))
+        engine.stop_event.set()
+        with patch.object(sherpa_dictate, "np", np, create=True):
+            engine._continuous_segment_worker()
+
+        self.assertEqual(engine.speech_detector.is_speech.call_count, 4)
+        self.assertIs(engine.phrase_queue.get_nowait(), sherpa_dictate._QUEUE_END)
+        self.assertIsNone(engine.worker_error)
 
     def test_slow_typing_does_not_block_recording_or_recognition(self) -> None:
         sherpa_dictate.np = np
@@ -118,6 +162,28 @@ class ContinuousPipelineTests(unittest.TestCase):
         self.assertFalse(engine.ignore_tts_playback)
         self.assertEqual(result["state"], "listening")
         self.assertEqual(result["restart_required"], [])
+
+    def test_new_sessions_reset_speech_detection_without_reloading_the_model(self) -> None:
+        engine = DictationEngine.__new__(DictationEngine)
+        engine.settings_lock = threading.Lock()
+        engine._apply_runtime_settings({"warm_up_output": False})
+        engine.input_sample_rate = 48000
+        engine.model_name = "test-model"
+        engine.listening = False
+        engine.speech_detector = None
+        with (
+            patch("sherpa_app.speech_detection.SpeechDetector") as detector,
+            patch.object(
+                sherpa_dictate, "sd", SimpleNamespace(InputStream=Mock()), create=True
+            ),
+            patch("sherpa_dictate.TtsPlaybackMonitor"),
+        ):
+            for _ in range(2):
+                engine.start_continuous(paste=False)
+                result = engine.stop(paste=False)
+                self.assertEqual(result["text"], "")
+            detector.assert_called_once_with(48000)
+            detector.return_value.reset.assert_called_once_with()
 
 
 if __name__ == "__main__":

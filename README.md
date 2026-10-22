@@ -12,10 +12,11 @@ distributions, download the latest `.deb` from the
 then install it with:
 
 ```bash
-sudo apt install ./sherpa_0.2.3_amd64.deb
+sudo apt install ./sherpa_0.2.4_amd64.deb
 ```
 
-Open **Sherpa** from the application menu. Speech models are not bundled; the
+Open **Sherpa** from the application menu. Dictation and text-to-speech models are
+not bundled; the
 Models page lets each user download only the models they want and choose where
 to store them.
 
@@ -104,11 +105,12 @@ and provides a Copy button for each fallback command.
 ```bash
 ./.venv/bin/pip install -r requirements-dev.txt
 ./build-release.sh
-./build-deb.sh 0.2.3
+./build-deb.sh 0.2.4
 ```
 
 This produces a self-contained application directory and a Debian package in
-`dist/`. Models are deliberately excluded and remain optional in-app downloads.
+`dist/`. Dictation and text-to-speech models remain optional in-app downloads;
+the small speech detector is included.
 
 ## Command-line tools
 
@@ -291,12 +293,14 @@ Edit `config.toml` to change:
 - `clipboard_clear_after_paste_ms`: delay before clearing; `-1` disables clearing
 - `warm_up_model`: run a silent inference when the daemon loads
 - `warm_up_output`: connect to `ydotool` before microphone capture begins
-- `silence_ms`: pause length that completes a phrase (default: 1500 ms)
+- `silence_ms`: time without detected speech that completes a phrase (default: 1500 ms)
 - `pre_roll_ms`: audio retained before speech begins, avoiding clipped first words
 - `first_phrase_pre_roll_ms`: longer pre-roll used until the first valid phrase
 - `min_speech_ms`: ignores clicks and other very short sounds
-- `speech_threshold`: RMS level treated as speech; lower it if speech is missed,
-  or raise it if background noise triggers phrases
+- `speech_threshold`: minimum microphone volume for detected speech; lower it
+  if quiet speech is missed. Continuous dictation also uses the bundled Silero
+  speech detector, so background noise does not keep resetting the pause timer.
+  Detection runs locally, adds no network requests, and resets for each session.
 - `max_phrase_seconds`: safety limit for speech without a pause
 - `audio_buffer_seconds`: raw microphone buffer used if processing briefly falls behind
 - `append_space_after_phrase`: separates successively inserted phrases

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sherpa-desktop"
-version = "0.2.3"
+version = "0.2.4"
 description = "Private, local dictation and text-to-speech desktop app"
 readme = "README.md"
 license = "MIT"
@@ -14,6 +14,7 @@ dependencies = [
     "numpy==2.5.1",
     "PySide6==6.10.1",
     "sherpa-onnx==1.13.4",
+    "soxr==1.1.0",
     "sounddevice==0.5.3",
 ]
 
@@ -26,6 +27,10 @@ sherpa = "sherpa_entry:main"
 
 [tool.setuptools]
 py-modules = ["sherpa_entry", "sherpa_dictate", "sherpa_read"]
+license-files = ["LICENSE", "licenses/*.txt"]
 
 [tool.setuptools.packages.find]
 include = ["sherpa_app*"]
+
+[tool.setuptools.package-data]
+sherpa_app = ["assets/*.onnx", "assets/*.md"]

@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -48,6 +48,8 @@ class TtsFeedbackTests(unittest.TestCase):
         engine.playback_monitor = self.monitor
         engine.mode = mode
         engine.worker_error = None
+        engine.speech_detector = Mock()
+        engine.speech_detector.is_speech.return_value = True
         return engine
 
     def capture(self, engine: DictationEngine, amplitude: float) -> None:

@@ -459,6 +459,11 @@ class SherpaWindow(QMainWindow):
         self.speech_threshold.setDecimals(3)
         self.speech_threshold.setSingleStep(0.001)
         self.speech_threshold.setValue(float(dictation.get("speech_threshold", 0.012)))
+        self.speech_threshold.setToolTip(
+            "Minimum microphone volume for detected speech. Lower values accept "
+            "quieter voices; higher values reject more quiet sounds. Continuous "
+            "dictation also checks whether the sound is speech."
+        )
 
         self.speaker_id = QSpinBox()
         self.speaker_id.setRange(0, 7)

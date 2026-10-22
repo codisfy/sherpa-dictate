@@ -1,6 +1,6 @@
 # PyInstaller specification for the Linux desktop bundle.
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 
 sherpa_datas, sherpa_binaries, sherpa_hidden = collect_all("sherpa_onnx")
@@ -9,12 +9,13 @@ a = Analysis(
     ["sherpa_entry.py"],
     pathex=["."],
     binaries=sherpa_binaries,
-    datas=sherpa_datas
+    datas=sherpa_datas + copy_metadata("soxr")
     + [
         ("config.toml", "."),
         ("assets/sherpa.svg", "assets"),
         ("assets/spin-up.svg", "assets"),
         ("assets/spin-down.svg", "assets"),
+        ("sherpa_app/assets", "sherpa_app/assets"),
         ("LICENSE", "."),
         ("THIRD_PARTY_NOTICES.md", "."),
         ("licenses", "licenses"),

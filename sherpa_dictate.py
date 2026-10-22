@@ -250,6 +250,7 @@ class DictationEngine:
         self.continuous_paste = True
         self.input_stream: sd.InputStream | None = None
         self.playback_monitor: TtsPlaybackMonitor | None = None
+        self.speech_detector: Any = None
         self.recognition_stream: Any = None
         self.audio_queue: queue.Queue[np.ndarray] | None = None
         self.phrase_queue: queue.Queue[Any] | None = None
@@ -448,6 +449,7 @@ class DictationEngine:
         assert self.audio_queue is not None
         assert self.phrase_queue is not None
         assert self.stop_event is not None
+        assert self.speech_detector is not None
 
         pre_roll: deque[np.ndarray] = deque()
         pre_roll_samples = 0
@@ -504,7 +506,10 @@ class DictationEngine:
                     continue
 
                 rms = float(np.sqrt(np.mean(np.square(samples), dtype=np.float64)))
-                is_speech = rms >= self.speech_threshold
+                # Feed every chunk so the recurrent detector follows speech
+                # ending, even when the volume gate rejects the audio.
+                detected_speech = self.speech_detector.is_speech(samples)
+                is_speech = detected_speech and rms >= self.speech_threshold
 
                 if not phrase_chunks:
                     pre_roll.append(samples)
@@ -705,6 +710,14 @@ class DictationEngine:
                 "model_name": self.model_name,
                 "message": f"Already listening in {self.mode} mode",
             }
+
+        if mode == "continuous":
+            from sherpa_app.speech_detection import SpeechDetector
+
+            if self.speech_detector is None:
+                self.speech_detector = SpeechDetector(self.input_sample_rate)
+            else:
+                self.speech_detector.reset()
 
         with self.settings_lock:
             output_method = self.output_method

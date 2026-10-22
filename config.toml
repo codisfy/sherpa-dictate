@@ -110,7 +110,8 @@ warm_up_output = true
 # Continuous dictation and silence detection
 # ---------------------------------------------------------------------------
 
-# Consecutive silence required to finish a phrase, in milliseconds.
+# Consecutive non-speech audio required to finish a phrase, in milliseconds.
+# A bundled local Silero detector distinguishes speech from background noise.
 # Lower it for faster insertion; raise it if natural thinking pauses split
 # sentences too aggressively. Typical range: 600-1500 ms.
 silence_ms = 1500
@@ -125,7 +126,7 @@ pre_roll_ms = 300
 # phrase, pre_roll_ms is used. The audio exists only in memory.
 first_phrase_pre_roll_ms = 2000
 
-# Minimum amount of above-threshold audio needed to accept a phrase. Shorter
+# Minimum amount of detected, above-threshold speech needed to accept a phrase. Shorter
 # sounds are treated as clicks/noise and their transcription is discarded.
 min_speech_ms = 250
 
@@ -139,7 +140,9 @@ max_phrase_seconds = 30
 # text insertion so slow typing cannot pause microphone processing.
 audio_buffer_seconds = 120
 
-# RMS amplitude that counts as speech. Microphone samples use a normalized
+# Minimum RMS amplitude for detected speech. Continuous dictation also uses
+# Silero speech detection to reject non-speech background noise.
+# Microphone samples use a normalized
 # 0.0-1.0 scale:
 #   lower value  -> detects quieter speech, but triggers more background noise
 #   higher value -> rejects more noise, but may miss quiet first syllables
