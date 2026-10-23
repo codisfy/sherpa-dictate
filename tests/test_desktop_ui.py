@@ -217,9 +217,29 @@ class DesktopStatusTests(unittest.TestCase):
         self.assertEqual(saved["dictation"]["output_method"], "clipboard")
         self.assertFalse(saved["dictation"]["append_space_after_phrase"])
         self.assertFalse(saved["dictation"]["ignore_tts_playback"])
+        self.assertEqual(window.settings_feedback.text(), "Settings saved")
+        self.assertFalse(window.settings_feedback.isHidden())
         service_calls = [call.args[:2] for call in run_service.call_args_list]
         self.assertIn(("dictate", ["reload-settings"]), service_calls)
         self.assertIn(("read", ["reload-settings"]), service_calls)
+        window.tray.hide()
+        window.deleteLater()
+
+    def test_settings_save_failure_is_visible_and_does_not_reload_services(self) -> None:
+        window = SherpaWindow(self.app)
+        window.status_timer.stop()
+        original_settings = window.settings
+        with (
+            patch("sherpa_app.main.save_settings", side_effect=OSError("Disk is full")),
+            patch.object(window, "run_service") as run_service,
+        ):
+            window.save_user_settings()
+
+        self.assertIn("Could not save settings", window.settings_feedback.text())
+        self.assertIn("Disk is full", window.settings_feedback.text())
+        self.assertFalse(window.settings_feedback.isHidden())
+        self.assertIs(window.settings, original_settings)
+        run_service.assert_not_called()
         window.tray.hide()
         window.deleteLater()
 

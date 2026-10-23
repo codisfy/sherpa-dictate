@@ -539,9 +539,29 @@ class SherpaWindow(QMainWindow):
         reset.clicked.connect(self.reset_user_settings)
         buttons.addWidget(save)
         buttons.addWidget(reset)
+        self.settings_feedback = QLabel()
+        self.settings_feedback.setObjectName("settingsFeedback")
+        self.settings_feedback.setTextFormat(Qt.PlainText)
+        self.settings_feedback.setWordWrap(True)
+        self.settings_feedback.hide()
+        buttons.addWidget(self.settings_feedback, 1)
         buttons.addStretch()
         layout.addLayout(buttons)
         layout.addStretch()
+
+        for field in (self.input_device, self.output_device):
+            field.textChanged.connect(self._clear_settings_feedback)
+        for field in (
+            self.num_threads, self.silence_ms, self.speech_threshold,
+            self.speaker_id, self.tts_speed,
+        ):
+            field.valueChanged.connect(self._clear_settings_feedback)
+        self.output_method.currentIndexChanged.connect(self._clear_settings_feedback)
+        for toggle in (
+            self.append_space, self.spoken_punctuation,
+            self.ignore_tts_playback, self.start_minimized,
+        ):
+            toggle.toggled.connect(self._clear_settings_feedback)
         return self._scrollable_page(page, "settingsScroll")
 
     def _build_shortcuts_tab(self) -> QWidget:
@@ -1084,6 +1104,23 @@ class SherpaWindow(QMainWindow):
         self.activity_label.setPlainText(output or f"Selected {MODEL_BY_ID[model_id].name}")
         self.refresh_model_rows()
 
+    def _clear_settings_feedback(self, *_args: Any) -> None:
+        self.settings_feedback.clear()
+        self.settings_feedback.hide()
+
+    def _show_settings_feedback(self, message: str, *, error: bool = False) -> None:
+        color, background, border = (
+            ("#a32d23", "#fff1f0", "#edb9b5")
+            if error
+            else ("#116a3e", "#e4f3e9", "#b8dec6")
+        )
+        self.settings_feedback.setStyleSheet(
+            f"color: {color}; background: {background}; border: 1px solid {border};"
+            "border-radius: 6px; padding: 6px 10px; font-weight: 600;"
+        )
+        self.settings_feedback.setText(message)
+        self.settings_feedback.show()
+
     def save_user_settings(self) -> None:
         latest = load_settings()
         previous_threads = latest.get("dictation", {}).get("num_threads", 8)
@@ -1105,8 +1142,13 @@ class SherpaWindow(QMainWindow):
             "speed": self.tts_speed.value(),
         }
         latest["start_minimized"] = self.start_minimized.isChecked()
-        save_settings(latest)
+        try:
+            save_settings(latest)
+        except OSError as error:
+            self._show_settings_feedback(f"Could not save settings: {error}", error=True)
+            return
         self.settings = latest
+        self._show_settings_feedback("Settings saved")
         restart_dictation = previous_threads != latest["dictation"]["num_threads"]
         self.run_service(
             "dictate",
@@ -1203,6 +1245,7 @@ class SherpaWindow(QMainWindow):
         self.start_minimized.setChecked(False)
         self.storage_label.setText(str(defaults["model_storage_dir"]))
         self.refresh_model_rows()
+        self._show_settings_feedback("Settings reset to defaults")
         self.run_service(
             "dictate",
             ["reload-settings"],
