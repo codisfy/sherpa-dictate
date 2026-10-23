@@ -12,7 +12,7 @@ distributions, download the latest `.deb` from the
 then install it with:
 
 ```bash
-sudo apt install ./sherpa_0.2.4_amd64.deb
+sudo apt install ./sherpa_0.2.5_amd64.deb
 ```
 
 Open **Sherpa** from the application menu. Dictation and text-to-speech models are
@@ -105,7 +105,7 @@ and provides a Copy button for each fallback command.
 ```bash
 ./.venv/bin/pip install -r requirements-dev.txt
 ./build-release.sh
-./build-deb.sh 0.2.4
+./build-deb.sh 0.2.5
 ```
 
 This produces a self-contained application directory and a Debian package in
@@ -303,7 +303,9 @@ Edit `config.toml` to change:
   Detection runs locally, adds no network requests, and resets for each session.
 - `max_phrase_seconds`: safety limit for speech without a pause
 - `audio_buffer_seconds`: raw microphone buffer used if processing briefly falls behind
-- `append_space_after_phrase`: separates successively inserted phrases
+- `append_space_after_phrase`: separates successively inserted phrases (on by
+  default). Toggle **Settings → Phrase spacing** to disable added spaces for
+  models that need different spacing. Saving applies this immediately.
 - `spoken_punctuation`: enables the exact phrase commands listed above
 
 The `[tts]` table configures the independent reader daemon:

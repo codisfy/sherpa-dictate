@@ -201,6 +201,8 @@ class DesktopStatusTests(unittest.TestCase):
             window = SherpaWindow(self.app)
         window.status_timer.stop()
         window._set_combo_data(window.output_method, "clipboard")
+        self.assertTrue(window.append_space.isChecked())
+        window.append_space.setChecked(False)
         self.assertTrue(window.ignore_tts_playback.isChecked())
         window.ignore_tts_playback.setChecked(False)
 
@@ -213,6 +215,7 @@ class DesktopStatusTests(unittest.TestCase):
         save_settings.assert_called_once()
         saved = save_settings.call_args.args[0]
         self.assertEqual(saved["dictation"]["output_method"], "clipboard")
+        self.assertFalse(saved["dictation"]["append_space_after_phrase"])
         self.assertFalse(saved["dictation"]["ignore_tts_playback"])
         service_calls = [call.args[:2] for call in run_service.call_args_list]
         self.assertIn(("dictate", ["reload-settings"]), service_calls)

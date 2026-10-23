@@ -448,6 +448,11 @@ class SherpaWindow(QMainWindow):
         self.output_method.addItem("Clipboard paste", "clipboard")
         self._set_combo_data(self.output_method, dictation.get("output_method", "type"))
 
+        self.append_space = ToggleSwitch("Add spaces between phrases")
+        self.append_space.setChecked(
+            bool(dictation.get("append_space_after_phrase", True))
+        )
+
         self.silence_ms = QSpinBox()
         self.silence_ms.setRange(300, 5000)
         self.silence_ms.setSingleStep(100)
@@ -490,6 +495,10 @@ class SherpaWindow(QMainWindow):
         form.addRow("Audio output", self.output_device)
         form.addRow("Recognition CPU threads", self.num_threads)
         form.addRow("Text insertion", self.output_method)
+        form.addRow(
+            "Phrase spacing",
+            self._toggle_field(self.append_space, "Add a space between dictated phrases"),
+        )
         form.addRow("Pause before transcription", self.silence_ms)
         form.addRow("Microphone sensitivity threshold", self.speech_threshold)
         form.addRow("TTS voice", self.speaker_id)
@@ -1083,6 +1092,7 @@ class SherpaWindow(QMainWindow):
             "audio_device": self._device_value(self.input_device.text()),
             "num_threads": self.num_threads.value(),
             "output_method": self.output_method.currentData(),
+            "append_space_after_phrase": self.append_space.isChecked(),
             "silence_ms": self.silence_ms.value(),
             "speech_threshold": self.speech_threshold.value(),
             "spoken_punctuation": self.spoken_punctuation.isChecked(),
@@ -1183,6 +1193,7 @@ class SherpaWindow(QMainWindow):
         self.output_device.clear()
         self.num_threads.setValue(8)
         self._set_combo_data(self.output_method, "type")
+        self.append_space.setChecked(True)
         self.silence_ms.setValue(1500)
         self.speech_threshold.setValue(0.012)
         self.speaker_id.setValue(2)
